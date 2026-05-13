@@ -5,15 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.1.2"
-
-if ((BASH_VERSINFO[0] < 4)); then
-  echo "git-tidy: bash 4+ required (you have $BASH_VERSION)" >&2
-  if [[ "$(uname)" == "Darwin" ]]; then
-    echo "  macOS ships bash 3.2; install a newer one with: brew install bash" >&2
-  fi
-  exit 1
-fi
+VERSION="0.1.3"
 
 print_usage() {
   cat <<'EOF'
@@ -134,33 +126,20 @@ git fetch --all --prune
 echo "==> git worktree prune"
 git worktree prune
 
-# Build branch -> worktree-path map (skipping the main worktree, which is listed first).
-declare -A worktree_for_branch=()
-first=1
-wt_path=""
-wt_branch=""
-flush_entry() {
-  if [[ -n "$wt_path" ]]; then
-    if (( first )); then
-      first=0
-    elif [[ -n "$wt_branch" ]]; then
-      worktree_for_branch["$wt_branch"]="$wt_path"
+# Print the worktree path for branch "$1" if any worktree has it checked out.
+# (A linear porcelain scan; called once per stale branch. No associative
+# arrays so this stays compatible with bash 3.2.)
+worktree_for() {
+  local target="refs/heads/$1" line cand_path=""
+  while IFS= read -r line; do
+    if [[ "$line" == "worktree "* ]]; then
+      cand_path="${line#worktree }"
+    elif [[ "$line" == "branch $target" ]]; then
+      echo "$cand_path"
+      return 0
     fi
-  fi
-  wt_path=""
-  wt_branch=""
+  done < <(git worktree list --porcelain)
 }
-while IFS= read -r line; do
-  if [[ "$line" == worktree\ * ]]; then
-    flush_entry
-    wt_path="${line#worktree }"
-  elif [[ "$line" == branch\ refs/heads/* ]]; then
-    wt_branch="${line#branch refs/heads/}"
-  elif [[ -z "$line" ]]; then
-    flush_entry
-  fi
-done < <(git worktree list --porcelain)
-flush_entry
 
 gone_branches=()
 while IFS=$'\t' read -r name track; do
@@ -183,7 +162,7 @@ else
       continue
     fi
 
-    wt="${worktree_for_branch[$branch]:-}"
+    wt="$(worktree_for "$branch")"
     if [[ -n "$wt" ]]; then
       if ! confirm "  remove worktree $wt (branch $branch)?"; then
         echo "  skip worktree $wt"

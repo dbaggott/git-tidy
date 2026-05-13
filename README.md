@@ -66,7 +66,7 @@ Run `git tidy --help` for details on what each cleanup step does and what it ski
 
 ## Requirements
 
-Bash 4+ and `git`. On macOS the system bash is 3.2 — install a newer bash via Homebrew (`brew install bash`) or use the Homebrew install method, which handles this automatically.
+Bash 3.2+ and `git`. macOS ships bash 3.2, which is supported — no separate `brew install bash` needed.
 
 ## License
 
