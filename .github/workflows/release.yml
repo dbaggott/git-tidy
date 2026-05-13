@@ -77,10 +77,10 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet; then
+          git add Formula/git-tidy.rb
+          if git diff --staged --quiet; then
             echo "No formula changes; skipping commit."
             exit 0
           fi
-          git add Formula/git-tidy.rb
           git commit -m "git-tidy ${{ steps.meta.outputs.tag }}"
           git push
