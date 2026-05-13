@@ -12,21 +12,8 @@ if ((BASH_VERSINFO[0] < 4)); then
   exit 1
 fi
 
-interactive=0
-target_dir=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -i|--interactive) interactive=1; shift ;;
-    -V|--version)
-      echo "git-tidy $VERSION"
-      exit 0
-      ;;
-    --self-upgrade)
-      echo "git-tidy: fetching latest installer..."
-      exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh)"
-      ;;
-    -h|--help)
-      cat <<'EOF'
+print_usage() {
+  cat <<'EOF'
 Usage: git tidy [-i|--interactive] [DIR]
 
 Without DIR: tidies the current git repository.
@@ -51,6 +38,23 @@ Options:
       --self-upgrade  Re-run the installer to fetch the latest version.
   -h, --help          Show this help.
 EOF
+}
+
+interactive=0
+target_dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i|--interactive) interactive=1; shift ;;
+    -V|--version)
+      echo "git-tidy $VERSION"
+      exit 0
+      ;;
+    --self-upgrade)
+      echo "git-tidy: fetching latest installer..."
+      exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh)"
+      ;;
+    -h|--help)
+      print_usage
       exit 0
       ;;
     -*)
@@ -91,6 +95,8 @@ fi
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
   echo "git-tidy: not inside a git repository" >&2
+  echo >&2
+  print_usage >&2
   exit 1
 fi
 
