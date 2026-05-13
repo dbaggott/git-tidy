@@ -60,8 +60,6 @@ jobs:
             version "$VERSION"
             license "MIT"
 
-            depends_on "bash"
-
             def install
               bin.install "git-tidy"
             end
