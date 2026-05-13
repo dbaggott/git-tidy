@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  update-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout git-tidy at tag
+        uses: actions/checkout@v4
+
+      - name: Resolve tag and check script version
+        id: meta
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          script_version="$(grep -E '^VERSION=' git-tidy | head -1 | cut -d'"' -f2)"
+          if [[ "$script_version" != "$version" ]]; then
+            echo "::error::Tag $tag does not match VERSION=$script_version in git-tidy script"
+            exit 1
+          fi
+          tarball_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+          echo "tag=$tag"          >>"$GITHUB_OUTPUT"
+          echo "version=$version"  >>"$GITHUB_OUTPUT"
+          echo "tarball=$tarball_url" >>"$GITHUB_OUTPUT"
+
+      - name: Compute tarball SHA256
+        id: sha
+        run: |
+          curl -fsSL "${{ steps.meta.outputs.tarball }}" -o tarball.tgz
+          sha="$(sha256sum tarball.tgz | awk '{print $1}')"
+          echo "sha256=$sha" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: dbaggott/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TARBALL: ${{ steps.meta.outputs.tarball }}
+          SHA256:  ${{ steps.sha.outputs.sha256 }}
+        run: |
+          mkdir -p tap/Formula
+          cat >tap/Formula/git-tidy.rb <<RUBY
+          class GitTidy < Formula
+            desc "Clean up git worktrees, stale branches, and pack objects"
+            homepage "https://github.com/dbaggott/git-tidy"
+            url "$TARBALL"
+            sha256 "$SHA256"
+            version "$VERSION"
+            license "MIT"
+
+            depends_on "bash"
+
+            def install
+              bin.install "git-tidy"
+            end
+
+            test do
+              assert_match "git-tidy $VERSION", shell_output("#{bin}/git-tidy --version")
+            end
+          end
+          RUBY
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No formula changes; skipping commit."
+            exit 0
+          fi
+          git add Formula/git-tidy.rb
+          git commit -m "git-tidy ${{ steps.meta.outputs.tag }}"
+          git push

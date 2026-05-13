@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# git-tidy — clean up worktrees, stale branches, and pack objects in the current repo.
+#
+# Default: non-interactive. Use -i to prompt before each destructive action.
+
+set -euo pipefail
+
+VERSION="0.1.0"
+
+if ((BASH_VERSINFO[0] < 4)); then
+  echo "git-tidy: bash 4+ required (you have $BASH_VERSION)" >&2
+  exit 1
+fi
+
+interactive=0
+target_dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i|--interactive) interactive=1; shift ;;
+    -V|--version)
+      echo "git-tidy $VERSION"
+      exit 0
+      ;;
+    --self-upgrade)
+      echo "git-tidy: fetching latest installer..."
+      exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh)"
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: git tidy [-i|--interactive] [DIR]
+
+Without DIR: tidies the current git repository.
+With DIR:    finds every git repository under DIR and tidies each.
+
+For each repository:
+  1. git fetch --all --prune
+  2. git worktree prune (drop admin records for missing worktree dirs)
+  3. Remove worktrees whose branch's upstream is gone
+  4. Delete local branches whose upstream is gone
+  5. If no in-progress work, switch to the default branch and ff-only pull
+  6. git gc
+
+Skips the current branch, the default branch (origin/HEAD), and worktrees
+with uncommitted changes (those are reported, not forced). Step 5 only runs
+when the working tree is clean, no extra worktrees exist, and HEAD has no
+commits not on origin/<default-branch>.
+
+Options:
+  -i, --interactive   Prompt y/N before each destructive action.
+  -V, --version       Print version and exit.
+      --self-upgrade  Re-run the installer to fetch the latest version.
+  -h, --help          Show this help.
+EOF
+      exit 0
+      ;;
+    -*)
+      echo "git-tidy: unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$target_dir" ]]; then
+        echo "git-tidy: extra argument: $1" >&2
+        exit 2
+      fi
+      target_dir="$1"
+      shift
+      ;;
+  esac
+done
+
+# Recursive mode: tidy every repo under target_dir.
+if [[ -n "$target_dir" ]]; then
+  if [[ ! -d "$target_dir" ]]; then
+    echo "git-tidy: not a directory: $target_dir" >&2
+    exit 1
+  fi
+  pass_args=()
+  (( interactive )) && pass_args=(-i)
+  status=0
+  while IFS= read -r gitdir; do
+    repo="${gitdir%/.git}"
+    echo "### $repo"
+    if ! ( cd "$repo" && "${BASH_SOURCE[0]}" ${pass_args[@]+"${pass_args[@]}"} ); then
+      echo "### failed: $repo"
+      status=1
+    fi
+    echo
+  done < <(find "$target_dir" -type d -name .git -prune 2>/dev/null | sort)
+  exit "$status"
+fi
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "git-tidy: not inside a git repository" >&2
+  exit 1
+fi
+
+confirm() {
+  if (( interactive )); then
+    local answer
+    read -r -p "$1 [y/N] " answer </dev/tty
+    [[ "$answer" =~ ^[Yy]$ ]]
+  else
+    return 0
+  fi
+}
+
+current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+default_branch=""
+if ref="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)"; then
+  default_branch="${ref#refs/remotes/origin/}"
+fi
+if [[ -z "$default_branch" ]]; then
+  for candidate in main master; do
+    if git show-ref --verify --quiet "refs/heads/$candidate"; then
+      default_branch="$candidate"
+      break
+    fi
+  done
+fi
+
+echo "==> git fetch --all --prune"
+git fetch --all --prune
+
+echo "==> git worktree prune"
+git worktree prune
+
+# Build branch -> worktree-path map (skipping the main worktree, which is listed first).
+declare -A worktree_for_branch=()
+first=1
+wt_path=""
+wt_branch=""
+flush_entry() {
+  if [[ -n "$wt_path" ]]; then
+    if (( first )); then
+      first=0
+    elif [[ -n "$wt_branch" ]]; then
+      worktree_for_branch["$wt_branch"]="$wt_path"
+    fi
+  fi
+  wt_path=""
+  wt_branch=""
+}
+while IFS= read -r line; do
+  if [[ "$line" == worktree\ * ]]; then
+    flush_entry
+    wt_path="${line#worktree }"
+  elif [[ "$line" == branch\ refs/heads/* ]]; then
+    wt_branch="${line#branch refs/heads/}"
+  elif [[ -z "$line" ]]; then
+    flush_entry
+  fi
+done < <(git worktree list --porcelain)
+flush_entry
+
+gone_branches=()
+while IFS=$'\t' read -r name track; do
+  if [[ "$track" == "[gone]" ]]; then
+    gone_branches+=("$name")
+  fi
+done < <(git for-each-ref --format='%(refname:short)%09%(upstream:track)' refs/heads)
+
+if (( ${#gone_branches[@]} == 0 )); then
+  echo "==> no stale branches"
+else
+  echo "==> cleaning ${#gone_branches[@]} stale branch(es)"
+  for branch in "${gone_branches[@]}"; do
+    if [[ "$branch" == "$current_branch" ]]; then
+      echo "  skip $branch (current branch)"
+      continue
+    fi
+    if [[ -n "$default_branch" && "$branch" == "$default_branch" ]]; then
+      echo "  skip $branch (default branch)"
+      continue
+    fi
+
+    wt="${worktree_for_branch[$branch]:-}"
+    if [[ -n "$wt" ]]; then
+      if ! confirm "  remove worktree $wt (branch $branch)?"; then
+        echo "  skip worktree $wt"
+        continue
+      fi
+      if err="$(git worktree remove "$wt" 2>&1)"; then
+        echo "  removed worktree $wt"
+      else
+        echo "  skip worktree $wt: $err"
+        continue
+      fi
+    fi
+
+    if ! confirm "  delete branch $branch?"; then
+      echo "  skip branch $branch"
+      continue
+    fi
+    git branch -D "$branch" >/dev/null
+    echo "  deleted branch $branch"
+  done
+fi
+
+# Sync the main checkout to the default branch when nothing is in progress.
+if [[ -n "$default_branch" ]]; then
+  in_progress_reason=""
+
+  total_worktrees=0
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      total_worktrees=$((total_worktrees + 1))
+    fi
+  done < <(git worktree list --porcelain)
+  other_worktrees=$((total_worktrees - 1))
+
+  if (( other_worktrees > 0 )); then
+    in_progress_reason="$other_worktrees other worktree(s) present"
+  elif [[ -n "$(git status --porcelain)" ]]; then
+    in_progress_reason="working tree not clean"
+  elif [[ -n "$current_branch" ]]; then
+    if ahead="$(git rev-list --count "origin/$default_branch..HEAD" 2>/dev/null)"; then
+      if [[ "$ahead" != "0" ]]; then
+        in_progress_reason="HEAD has $ahead commit(s) not on origin/$default_branch"
+      fi
+    else
+      in_progress_reason="cannot compare HEAD to origin/$default_branch"
+    fi
+  fi
+
+  if [[ -n "$in_progress_reason" ]]; then
+    echo "==> skip sync to $default_branch ($in_progress_reason)"
+  else
+    if [[ "$current_branch" != "$default_branch" ]]; then
+      if confirm "  switch to $default_branch?"; then
+        echo "==> git switch $default_branch"
+        git switch --quiet "$default_branch"
+      else
+        echo "  skip switch to $default_branch"
+      fi
+    fi
+    if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "$default_branch" ]]; then
+      if confirm "  pull $default_branch?"; then
+        echo "==> git pull --ff-only"
+        git pull --ff-only
+      else
+        echo "  skip pull"
+      fi
+    fi
+  fi
+fi
+
+echo "==> git gc"
+git gc --quiet
+echo "==> done"
