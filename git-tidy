@@ -5,28 +5,15 @@
 
 set -euo pipefail
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 
 if ((BASH_VERSINFO[0] < 4)); then
   echo "git-tidy: bash 4+ required (you have $BASH_VERSION)" >&2
   exit 1
 fi
 
-interactive=0
-target_dir=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -i|--interactive) interactive=1; shift ;;
-    -V|--version)
-      echo "git-tidy $VERSION"
-      exit 0
-      ;;
-    --self-upgrade)
-      echo "git-tidy: fetching latest installer..."
-      exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh)"
-      ;;
-    -h|--help)
-      cat <<'EOF'
+print_usage() {
+  cat <<'EOF'
 Usage: git tidy [-i|--interactive] [DIR]
 
 Without DIR: tidies the current git repository.
@@ -51,6 +38,23 @@ Options:
       --self-upgrade  Re-run the installer to fetch the latest version.
   -h, --help          Show this help.
 EOF
+}
+
+interactive=0
+target_dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i|--interactive) interactive=1; shift ;;
+    -V|--version)
+      echo "git-tidy $VERSION"
+      exit 0
+      ;;
+    --self-upgrade)
+      echo "git-tidy: fetching latest installer..."
+      exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh)"
+      ;;
+    -h|--help)
+      print_usage
       exit 0
       ;;
     -*)
@@ -91,6 +95,8 @@ fi
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
   echo "git-tidy: not inside a git repository" >&2
+  echo >&2
+  print_usage >&2
   exit 1
 fi
 
@@ -227,20 +233,12 @@ if [[ -n "$default_branch" ]]; then
     echo "==> skip sync to $default_branch ($in_progress_reason)"
   else
     if [[ "$current_branch" != "$default_branch" ]]; then
-      if confirm "  switch to $default_branch?"; then
-        echo "==> git switch $default_branch"
-        git switch --quiet "$default_branch"
-      else
-        echo "  skip switch to $default_branch"
-      fi
+      echo "==> git switch $default_branch"
+      git switch --quiet "$default_branch"
     fi
     if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "$default_branch" ]]; then
-      if confirm "  pull $default_branch?"; then
-        echo "==> git pull --ff-only"
-        git pull --ff-only
-      else
-        echo "  skip pull"
-      fi
+      echo "==> git pull --ff-only"
+      git pull --ff-only
     fi
   fi
 fi
