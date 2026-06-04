@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.1.3"
+VERSION="0.2.0"
 
 print_usage() {
   cat <<'EOF'
@@ -17,15 +17,22 @@ With DIR:    finds every git repository under DIR and tidies each.
 For each repository:
   1. git fetch --all --prune
   2. git worktree prune (drop admin records for missing worktree dirs)
-  3. Remove worktrees whose branch's upstream is gone
-  4. Delete local branches whose upstream is gone
-  5. If no in-progress work, switch to the default branch and ff-only pull
-  6. git gc
+  3. Remove detached folders under .worktree/ or .worktrees/ that git no
+     longer lists as worktrees
+  4. Remove worktrees whose branch's upstream is gone
+  5. Delete local branches whose upstream is gone
+  6. If no in-progress work, switch to the default branch and ff-only pull
+  7. git gc
 
 Skips the current branch, the default branch (origin/HEAD), and worktrees
-with uncommitted changes (those are reported, not forced). Step 5 only runs
-when the working tree is clean, no extra worktrees exist, and HEAD has no
-commits not on origin/<default-branch>.
+with uncommitted changes (those are reported, not forced). Step 3 removes a
+detached folder only when every file's content already exists in the repo's
+object database (i.e. was committed or staged at some point); folders with
+unsaved work are reported, not removed. Caution: content that was only ever
+staged (never committed) counts as saved, but once the folder is deleted it
+is recoverable only via `git fsck --lost-found`, and only until git prunes
+unreachable objects. Step 6 only runs when the working tree is clean, no
+extra worktrees exist, and HEAD has no commits not on origin/<default-branch>.
 
 Options:
   -i, --interactive   Prompt y/N before each destructive action.
@@ -125,6 +132,102 @@ git fetch --all --prune
 
 echo "==> git worktree prune"
 git worktree prune
+
+# --- detached worktree folders ---------------------------------------------
+# When worktrees live in .worktree/ or .worktrees/ inside the main repo
+# folder, a removal can leave the directory behind after git has dropped its
+# admin record (e.g. `worktree prune` after the gitdir went missing). Such
+# folders are invisible to `git worktree list` and block reusing the path.
+# Remove them when they contain no unsaved work; report them otherwise.
+
+# Print the canonical path of directory "$1" (symlinks resolved).
+canonical_dir() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
+
+# Print the first file under "$1" whose content is not in the repo's object
+# database — evidence of work that was never committed or staged. Prints
+# nothing when all content is saved. The worktree's .git pointer is skipped;
+# anything unreadable or unhashable counts as unsaved. If find cannot fully
+# traverse the folder, prints "$1" itself so the caller fails safe.
+first_unsaved_file() {
+  local dir="$1" listing file hash
+  if ! listing="$(find "$dir" -name .git -prune -o \( -type f -o -type l \) -print 2>/dev/null)"; then
+    echo "$dir"
+    return 0
+  fi
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    if [[ -L "$file" ]]; then
+      hash="$(printf '%s' "$(readlink "$file")" | git hash-object --stdin 2>/dev/null)" || hash=""
+    else
+      hash="$(git hash-object -- "$file" 2>/dev/null)" || hash=""
+    fi
+    if [[ -z "$hash" ]] || ! git cat-file -e "$hash" 2>/dev/null; then
+      echo "$file"
+      return 0
+    fi
+  done <<<"$listing"
+}
+
+detached_dirs=()
+git_common_dir="$(git rev-parse --git-common-dir)"
+if [[ -d "$git_common_dir" ]]; then
+  git_common_dir="$(cd "$git_common_dir" && pwd -P)"
+fi
+if [[ "$git_common_dir" == */.git ]]; then
+  main_repo_dir="${git_common_dir%/.git}"
+
+  registered_worktrees=()
+  while IFS= read -r line; do
+    if [[ "$line" == "worktree "* ]]; then
+      wt_canon="$(canonical_dir "${line#worktree }")" && registered_worktrees+=("$wt_canon")
+    fi
+  done < <(git worktree list --porcelain)
+
+  for base in "$main_repo_dir/.worktree" "$main_repo_dir/.worktrees"; do
+    [[ -d "$base" ]] || continue
+    for dir in "$base"/*/; do
+      dir="${dir%/}"
+      [[ -d "$dir" ]] || continue
+      canon="$(canonical_dir "$dir")" || continue
+      registered=0
+      for wt in ${registered_worktrees[@]+"${registered_worktrees[@]}"}; do
+        # A registered path nested deeper inside the candidate also makes
+        # it off-limits: removing the candidate would destroy that worktree.
+        if [[ "$wt" == "$canon" || "$wt" == "$canon"/* ]]; then
+          registered=1
+          break
+        fi
+      done
+      (( registered )) || detached_dirs+=("$dir")
+    done
+  done
+fi
+
+if (( ${#detached_dirs[@]} > 0 )); then
+  echo "==> cleaning ${#detached_dirs[@]} detached worktree folder(s)"
+  for dir in "${detached_dirs[@]}"; do
+    unsaved="$(first_unsaved_file "$dir")"
+    if [[ "$unsaved" == "$dir" ]]; then
+      echo "  skip $dir (not fully readable)"
+      continue
+    fi
+    if [[ -n "$unsaved" ]]; then
+      echo "  skip $dir (unsaved work, e.g. ${unsaved#"$dir"/})"
+      continue
+    fi
+    if ! confirm "  remove detached folder $dir?"; then
+      echo "  skip $dir"
+      continue
+    fi
+    if err="$(rm -rf -- "$dir" 2>&1)"; then
+      echo "  removed $dir"
+    else
+      echo "  skip $dir (rm failed: $err)"
+    fi
+  done
+fi
 
 # Print the worktree path for branch "$1" if any worktree has it checked out.
 # (A linear porcelain scan; called once per stale branch. No associative

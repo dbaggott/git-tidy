@@ -6,12 +6,12 @@ on:
     branches: [main]
 
 jobs:
-  shellcheck:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run shellcheck
-        run: shellcheck git-tidy install.sh
+      - name: Run tests
+        run: make test
 
   smoke:
     runs-on: ubuntu-latest
