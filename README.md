@@ -21,7 +21,7 @@ Run with `-i` for an interactive prompt before each destructive action, or pass 
 
 ## Install
 
-Pick one. All three are equivalent — they install the same script.
+Pick one. Homebrew and the one-liner both install the latest [release](https://github.com/dbaggott/git-tidy/releases); from source installs whatever you have checked out.
 
 ### Homebrew (recommended on macOS)
 
@@ -38,7 +38,7 @@ Upgrade with `brew upgrade git-tidy`.
 curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh | bash
 ```
 
-Installs to `~/.local/bin/git-tidy`. Override the install prefix with `PREFIX=/usr/local`. Upgrade with `git tidy --self-upgrade`.
+Installs the latest release to `~/.local/bin/git-tidy`. Override the install prefix with `PREFIX=/usr/local`, or pin a version with `REF=v0.2.0` (`REF=main` installs unreleased work). Upgrade with `git tidy --self-upgrade`.
 
 ### From source
 
@@ -65,6 +65,12 @@ git tidy [-i|--interactive] [DIR]
 | `-h`, `--help` | Show full help |
 
 Run `git tidy --help` for details on what each cleanup step does and what it skips.
+
+## Releasing
+
+Bump `VERSION=` in the `git-tidy` script and merge to main. CI tags the
+commit `v<VERSION>`, publishes a GitHub Release with generated notes, and
+updates the Homebrew tap formula — merging the bump is the whole release.
 
 ## Requirements
 

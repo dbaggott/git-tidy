@@ -1,43 +1,67 @@
 name: release
 
+# A merge to main that bumps VERSION= in the git-tidy script IS a release:
+# this workflow tags the commit v<VERSION>, publishes a GitHub Release with
+# generated notes, and updates the Homebrew tap formula. Pushes that don't
+# change VERSION (or re-runs after a release) find the tag already present
+# and stop. Tagging, releasing, and the tap update live in one workflow
+# because tags created with the workflow's GITHUB_TOKEN do not trigger
+# other workflows.
+
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  update-tap:
+  release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout git-tidy at tag
+      - name: Checkout git-tidy
         uses: actions/checkout@v4
 
-      - name: Resolve tag and check script version
+      - name: Read script version and check for existing tag
         id: meta
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          script_version="$(grep -E '^VERSION=' git-tidy | head -1 | cut -d'"' -f2)"
-          if [[ "$script_version" != "$version" ]]; then
-            echo "::error::Tag $tag does not match VERSION=$script_version in git-tidy script"
+          version="$(grep -E '^VERSION=' git-tidy | head -1 | cut -d'"' -f2)"
+          if [[ -z "$version" ]]; then
+            echo "::error::could not read VERSION from git-tidy script"
             exit 1
           fi
-          tarball_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
-          echo "tag=$tag"          >>"$GITHUB_OUTPUT"
-          echo "version=$version"  >>"$GITHUB_OUTPUT"
-          echo "tarball=$tarball_url" >>"$GITHUB_OUTPUT"
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; nothing to release."
+            echo "new=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "new=true" >>"$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag"         >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Create tag and GitHub release
+        if: steps.meta.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "${{ steps.meta.outputs.tag }}" \
+            --generate-notes
 
       - name: Compute tarball SHA256
+        if: steps.meta.outputs.new == 'true'
         id: sha
         run: |
-          curl -fsSL "${{ steps.meta.outputs.tarball }}" -o tarball.tgz
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${{ steps.meta.outputs.tag }}.tar.gz" -o tarball.tgz
           sha="$(sha256sum tarball.tgz | awk '{print $1}')"
           echo "sha256=$sha" >>"$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
+        if: steps.meta.outputs.new == 'true'
         uses: actions/checkout@v4
         with:
           repository: dbaggott/homebrew-tap
@@ -45,19 +69,21 @@ jobs:
           path: tap
 
       - name: Update formula
+        if: steps.meta.outputs.new == 'true'
         env:
           VERSION: ${{ steps.meta.outputs.version }}
-          TARBALL: ${{ steps.meta.outputs.tarball }}
+          TAG:     ${{ steps.meta.outputs.tag }}
           SHA256:  ${{ steps.sha.outputs.sha256 }}
         run: |
           mkdir -p tap/Formula
+          # No explicit `version` line: brew infers it from the tag in the
+          # url, and `brew audit` flags a derivable version as redundant.
           cat >tap/Formula/git-tidy.rb <<RUBY
           class GitTidy < Formula
             desc "Clean up git worktrees, stale branches, and pack objects"
             homepage "https://github.com/dbaggott/git-tidy"
-            url "$TARBALL"
+            url "https://github.com/dbaggott/git-tidy/archive/refs/tags/$TAG.tar.gz"
             sha256 "$SHA256"
-            version "$VERSION"
             license "MIT"
 
             def install
@@ -70,7 +96,8 @@ jobs:
           end
           RUBY
 
-      - name: Commit and push
+      - name: Commit and push formula
+        if: steps.meta.outputs.new == 'true'
         working-directory: tap
         run: |
           git config user.name  "github-actions[bot]"
