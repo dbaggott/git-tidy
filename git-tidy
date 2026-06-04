@@ -28,9 +28,11 @@ Skips the current branch, the default branch (origin/HEAD), and worktrees
 with uncommitted changes (those are reported, not forced). Step 3 removes a
 detached folder only when every file's content already exists in the repo's
 object database (i.e. was committed or staged at some point); folders with
-unsaved work are reported, not removed. Step 6 only runs when the working
-tree is clean, no extra worktrees exist, and HEAD has no commits not on
-origin/<default-branch>.
+unsaved work are reported, not removed. Caution: content that was only ever
+staged (never committed) counts as saved, but once the folder is deleted it
+is recoverable only via `git fsck --lost-found`, and only until git prunes
+unreachable objects. Step 6 only runs when the working tree is clean, no
+extra worktrees exist, and HEAD has no commits not on origin/<default-branch>.
 
 Options:
   -i, --interactive   Prompt y/N before each destructive action.
@@ -146,10 +148,16 @@ canonical_dir() {
 # Print the first file under "$1" whose content is not in the repo's object
 # database — evidence of work that was never committed or staged. Prints
 # nothing when all content is saved. The worktree's .git pointer is skipped;
-# anything unreadable or unhashable counts as unsaved.
+# anything unreadable or unhashable counts as unsaved. If find cannot fully
+# traverse the folder, prints "$1" itself so the caller fails safe.
 first_unsaved_file() {
-  local dir="$1" file hash
+  local dir="$1" listing file hash
+  if ! listing="$(find "$dir" -name .git -prune -o \( -type f -o -type l \) -print 2>/dev/null)"; then
+    echo "$dir"
+    return 0
+  fi
   while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
     if [[ -L "$file" ]]; then
       hash="$(printf '%s' "$(readlink "$file")" | git hash-object --stdin 2>/dev/null)" || hash=""
     else
@@ -159,7 +167,7 @@ first_unsaved_file() {
       echo "$file"
       return 0
     fi
-  done < <(find "$dir" -name .git -prune -o \( -type f -o -type l \) -print 2>/dev/null)
+  done <<<"$listing"
 }
 
 detached_dirs=()
@@ -185,7 +193,9 @@ if [[ "$git_common_dir" == */.git ]]; then
       canon="$(canonical_dir "$dir")" || continue
       registered=0
       for wt in ${registered_worktrees[@]+"${registered_worktrees[@]}"}; do
-        if [[ "$wt" == "$canon" ]]; then
+        # A registered path nested deeper inside the candidate also makes
+        # it off-limits: removing the candidate would destroy that worktree.
+        if [[ "$wt" == "$canon" || "$wt" == "$canon"/* ]]; then
           registered=1
           break
         fi
@@ -199,6 +209,10 @@ if (( ${#detached_dirs[@]} > 0 )); then
   echo "==> cleaning ${#detached_dirs[@]} detached worktree folder(s)"
   for dir in "${detached_dirs[@]}"; do
     unsaved="$(first_unsaved_file "$dir")"
+    if [[ "$unsaved" == "$dir" ]]; then
+      echo "  skip $dir (not fully readable)"
+      continue
+    fi
     if [[ -n "$unsaved" ]]; then
       echo "  skip $dir (unsaved work, e.g. ${unsaved#"$dir"/})"
       continue
@@ -207,8 +221,11 @@ if (( ${#detached_dirs[@]} > 0 )); then
       echo "  skip $dir"
       continue
     fi
-    rm -rf -- "$dir"
-    echo "  removed $dir"
+    if err="$(rm -rf -- "$dir" 2>&1)"; then
+      echo "  removed $dir"
+    else
+      echo "  skip $dir (rm failed: $err)"
+    fi
   done
 fi
 

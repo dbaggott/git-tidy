@@ -7,7 +7,7 @@ help:
 	@echo "Targets:"
 	@echo "  install    Install git-tidy to \$$PREFIX/bin (default: \$$HOME/.local/bin)"
 	@echo "  uninstall  Remove git-tidy from \$$PREFIX/bin"
-	@echo "  test       Run shellcheck against the scripts"
+	@echo "  test       Run shellcheck and the sandbox tests"
 	@echo ""
 	@echo "Override install location with: make install PREFIX=/usr/local"
 
@@ -21,4 +21,5 @@ uninstall:
 	@echo "Removed $(BINDIR)/git-tidy"
 
 test:
-	@shellcheck git-tidy install.sh
+	@shellcheck git-tidy install.sh test/run.sh
+	@bash test/run.sh
