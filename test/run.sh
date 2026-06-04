@@ -106,6 +106,34 @@ out_plain="$( (cd "$plain" && run_tidy) 2>&1 )" || plain_status=$?
 assert "tidy exits 0 in plain repo" test "$plain_status" -eq 0
 assert_not "no detached-folder output for plain repo" quiet grep detached <<<"$out_plain"
 
+# --- sync gate: other worktrees block switching, not the ff-only pull
+sync="$sandbox/sync"
+git clone -q "$sandbox/origin.git" "$sync" 2>/dev/null
+git -C "$sync" config user.email tidy-test@example.invalid
+git -C "$sync" config user.name tidy-test
+git -C "$sync" worktree add -q "$sandbox/sync-wt" -b sync-wt
+echo update > "$sandbox/sync-wt/update.txt"
+git -C "$sandbox/sync-wt" add update.txt
+git -C "$sandbox/sync-wt" commit -qm update
+git -C "$sandbox/sync-wt" push -q origin "HEAD:refs/heads/$branch"
+
+sync_status=0
+out_sync="$( (cd "$sync" && run_tidy) 2>&1 )" || sync_status=$?
+assert "tidy exits 0 in sync fixture" test "$sync_status" -eq 0
+assert "default branch ff-pulled despite another worktree" \
+  test "$(git -C "$sync" rev-parse HEAD)" = "$(git -C "$sync" rev-parse "origin/$branch")"
+assert "pull reported" quiet grep -- "git pull --ff-only" <<<"$out_sync"
+assert_not "no sync skip when only a pull is needed" quiet grep "skip sync" <<<"$out_sync"
+
+git -C "$sync" switch -qc parked
+parked_status=0
+out_parked="$( (cd "$sync" && run_tidy) 2>&1 )" || parked_status=$?
+assert "tidy exits 0 on parked branch" test "$parked_status" -eq 0
+assert "switch away still blocked by other worktree" \
+  quiet grep "skip sync to $branch (1 other worktree(s) present)" <<<"$out_parked"
+assert "still on parked branch" \
+  test "$(git -C "$sync" symbolic-ref --short HEAD)" = parked
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1
