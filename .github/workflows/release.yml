@@ -4,20 +4,33 @@ name: release
 # this workflow tags the commit v<VERSION>, publishes a GitHub Release with
 # generated notes, and updates the Homebrew tap formula. Pushes that don't
 # change VERSION (or re-runs after a release) find the tag already present
-# and stop. Tagging, releasing, and the tap update live in one workflow
-# because tags created with the workflow's GITHUB_TOKEN do not trigger
-# other workflows.
+# and skip the tag/release step. Tagging, releasing, and the tap update
+# live in one workflow because tags created with the workflow's
+# GITHUB_TOKEN do not trigger other workflows.
+#
+# workflow_dispatch (main only) re-runs the sha + tap steps against the
+# existing release, recovering a release-created-but-tap-push-failed run;
+# it is idempotent when the tap is already current.
 
 on:
   push:
     branches: [main]
+    paths: ['git-tidy']
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Serialize runs: two quick merges must not both see "no tag" and race to
+# create the same release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
+    # Dispatch can target any branch; only ever release from main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout git-tidy
@@ -53,7 +66,7 @@ jobs:
             --generate-notes
 
       - name: Compute tarball SHA256
-        if: steps.meta.outputs.new == 'true'
+        if: steps.meta.outputs.new == 'true' || github.event_name == 'workflow_dispatch'
         id: sha
         run: |
           curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${{ steps.meta.outputs.tag }}.tar.gz" -o tarball.tgz
@@ -61,7 +74,7 @@ jobs:
           echo "sha256=$sha" >>"$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
-        if: steps.meta.outputs.new == 'true'
+        if: steps.meta.outputs.new == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
           repository: dbaggott/homebrew-tap
@@ -69,7 +82,7 @@ jobs:
           path: tap
 
       - name: Update formula
-        if: steps.meta.outputs.new == 'true'
+        if: steps.meta.outputs.new == 'true' || github.event_name == 'workflow_dispatch'
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           TAG:     ${{ steps.meta.outputs.tag }}
@@ -97,7 +110,7 @@ jobs:
           RUBY
 
       - name: Commit and push formula
-        if: steps.meta.outputs.new == 'true'
+        if: steps.meta.outputs.new == 'true' || github.event_name == 'workflow_dispatch'
         working-directory: tap
         run: |
           git config user.name  "github-actions[bot]"

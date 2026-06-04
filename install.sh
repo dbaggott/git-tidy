@@ -15,10 +15,17 @@ PREFIX="${PREFIX:-$HOME/.local}"
 REF="${REF:-}"
 
 # Tag of the latest GitHub release, so every install channel ships the same
-# vetted artifact instead of whatever is on main.
+# vetted artifact instead of whatever is on main. Resolved by following the
+# releases/latest redirect to /releases/tag/<tag> — unlike the API, the
+# redirect is not rate-limited. With no releases it lands on /releases.
 latest_release_tag() {
-  curl -fsSL "https://api.github.com/repos/dbaggott/git-tidy/releases/latest" \
-    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
+  local url
+  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/dbaggott/git-tidy/releases/latest")" || return 1
+  case "$url" in
+    */releases/tag/*) printf '%s\n' "${url##*/}" ;;
+    *) return 1 ;;
+  esac
 }
 
 if [[ -z "$REF" ]]; then
