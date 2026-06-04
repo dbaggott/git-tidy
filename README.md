@@ -1,11 +1,13 @@
 # git-tidy
 
-A `git` subcommand that cleans up a repository: prunes stale worktrees, deletes branches whose upstream is gone, fast-forwards the default branch, and runs `git gc`.
+A `git` subcommand that cleans up a repository: prunes stale worktrees, removes detached worktree folders left under `.worktree/` or `.worktrees/`, deletes branches whose upstream is gone, fast-forwards the default branch, and runs `git gc`.
 
 ```
 $ git tidy
 ==> git fetch --all --prune
 ==> git worktree prune
+==> cleaning 1 detached worktree folder(s)
+  removed /path/to/repo/.worktrees/abandoned-spike
 ==> cleaning 3 stale branch(es)
   removed worktree .worktrees/old-feature
   deleted branch old-feature
