@@ -1,17 +1,40 @@
 #!/usr/bin/env bash
-# git-tidy installer — downloads the latest git-tidy script into PREFIX/bin.
+# git-tidy installer — downloads the latest git-tidy release into PREFIX/bin.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh | bash
 #
 # Env overrides:
 #   PREFIX  Install prefix (default: $HOME/.local). Binary goes in $PREFIX/bin.
-#   REF     Git ref to install from (default: main). Use a tag like v0.1.0 for a pinned install.
+#   REF     Git ref to install from (default: the latest GitHub release).
+#           Use a tag like v0.1.0 for a pinned install, or main for unreleased.
 
 set -euo pipefail
 
 PREFIX="${PREFIX:-$HOME/.local}"
-REF="${REF:-main}"
+REF="${REF:-}"
+
+# Tag of the latest GitHub release, so every install channel ships the same
+# vetted artifact instead of whatever is on main. Resolved by following the
+# releases/latest redirect to /releases/tag/<tag> — unlike the API, the
+# redirect is not rate-limited. With no releases it lands on /releases.
+latest_release_tag() {
+  local url
+  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/dbaggott/git-tidy/releases/latest")" || return 1
+  case "$url" in
+    */releases/tag/*) printf '%s\n' "${url##*/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ -z "$REF" ]]; then
+  REF="$(latest_release_tag)" || REF=""
+  if [[ -z "$REF" ]]; then
+    echo "install: could not determine the latest release (set REF=main to install from main)" >&2
+    exit 1
+  fi
+fi
 BINDIR="$PREFIX/bin"
 URL="https://raw.githubusercontent.com/dbaggott/git-tidy/$REF/git-tidy"
 TARGET="$BINDIR/git-tidy"
