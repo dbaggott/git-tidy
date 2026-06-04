@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 print_usage() {
   cat <<'EOF'
@@ -31,8 +31,11 @@ object database (i.e. was committed or staged at some point); folders with
 unsaved work are reported, not removed. Caution: content that was only ever
 staged (never committed) counts as saved, but once the folder is deleted it
 is recoverable only via `git fsck --lost-found`, and only until git prunes
-unreachable objects. Step 6 only runs when the working tree is clean, no
-extra worktrees exist, and HEAD has no commits not on origin/<default-branch>.
+unreachable objects. Step 6 only runs when the working tree is clean and
+HEAD has no commits not on origin/<default-branch>; switching away from
+another branch additionally requires that no other worktrees exist (when
+the default branch is already checked out, the ff-only pull runs even with
+other worktrees present — it cannot disturb them).
 
 Options:
   -i, --interactive   Prompt y/N before each destructive action.
@@ -300,7 +303,10 @@ if [[ -n "$default_branch" ]]; then
   done < <(git worktree list --porcelain)
   other_worktrees=$((total_worktrees - 1))
 
-  if (( other_worktrees > 0 )); then
+  # Other worktrees signal in-progress work, so leave the checked-out
+  # branch alone — but a ff-only pull cannot disturb them, so they don't
+  # block syncing when the default branch is already checked out.
+  if [[ "$current_branch" != "$default_branch" ]] && (( other_worktrees > 0 )); then
     in_progress_reason="$other_worktrees other worktree(s) present"
   elif [[ -n "$(git status --porcelain)" ]]; then
     in_progress_reason="working tree not clean"
