@@ -39,10 +39,13 @@ Each cleanup decision is configurable via `git config` (per repo, or `--global` 
 | `tidy.remote.branchScope` | `tracked` (default) \| `all` | which origin branches are candidates |
 | `tidy.local.branches` | `delete` (default) \| `keep` \| `prompt` | redundant local branches |
 | `tidy.local.worktrees` | `delete` (default) \| `keep` \| `prompt` | worktrees checked out on a redundant branch |
-| `tidy.local.detachedFolders` | `delete` (default) \| `keep` \| `prompt` | detached folders under `.worktree[s]/` |
+| `tidy.local.detachedFolders` | `delete` (default) \| `keep` \| `prompt` | detached folders under the worktree dirs |
+| `tidy.local.worktreeDirs` | `.worktree:.worktrees:worktrees` (default) | where worktree folders live |
 | `tidy.github.prLookup` | `auto` (default) \| `off` | the GitHub fallback for conflicted branches |
 
 `tidy.github.prLookup` controls the GitHub fallback for conflict-stranded branches described above: `auto` (default) uses it whenever the origin is github.com and `gh` is installed and authenticated — misses and unavailability are silent, falling back to keep — while `off` never asks.
+
+`tidy.local.worktreeDirs` is a colon-separated list of directories whose immediate children are treated as worktree folders for the detached-folder cleanup. Relative entries resolve against the main checkout (`.wt`, `worktrees`); absolute entries are used as-is (a centralized `~/worktrees/myrepo`). A configured value replaces the default rather than extending it. Point it only at dedicated worktree containers — anything under these directories that git doesn't list as a worktree is a removal candidate, though folders holding tracked files or unsaved work are never touched.
 
 `tidy.remote.branchScope` controls which origin branches are candidates: `tracked` (default) considers only branches some local branch tracks — i.e. yours — while `all` considers every branch on origin (for repos where you want one tidy run to sweep everything). Either way, a remote branch is left alone while a local branch is still building on it with unmerged work of its own, and deletion is lease-protected: if origin moved after git-tidy's fetch, the delete is refused rather than destroying the newer push.
 

@@ -748,6 +748,44 @@ assert "origin/HEAD repaired" \
 assert_not "redundant branch cleaned once the default resolved" \
   quiet git -C "$trunkc" show-ref --verify refs/heads/tnb
 
+# --- tidy.local.worktreeDirs: custom containers replace the default ---------
+wd="$sandbox/wdirs"
+git clone -q "$sandbox/origin.git" "$wd" 2>/dev/null
+git -C "$wd" config user.email tidy-test@example.invalid
+git -C "$wd" config user.name tidy-test
+git -C "$wd" config tidy.local.worktreeDirs ".wt:$sandbox/abswt"
+mkdir -p "$wd/.wt/stale" "$wd/.wt/precious" "$wd/.worktrees/not-scanned" "$sandbox/abswt/old"
+echo hello > "$wd/.wt/stale/copy.txt"            # content already in the odb
+echo "one of a kind" > "$wd/.wt/precious/wip.txt"
+echo hello > "$wd/.worktrees/not-scanned/copy.txt"
+wd_status=0
+out_wd="$( (cd "$wd" && run_tidy) 2>&1 )" || wd_status=$?
+assert "tidy exits 0 with custom worktree dirs" test "$wd_status" -eq 0
+assert "saved folder removed from a relative custom dir" test ! -e "$wd/.wt/stale"
+assert "unsaved folder kept in a custom dir" test -f "$wd/.wt/precious/wip.txt"
+assert "unsaved folder reported in a custom dir" \
+  quiet grep "skip .*precious (unsaved work, e.g. wip.txt)" <<<"$out_wd"
+assert "saved folder removed from an absolute custom dir" test ! -e "$sandbox/abswt/old"
+assert "default dir not scanned once overridden" test -d "$wd/.worktrees/not-scanned"
+
+# Non-hidden worktrees/ is in the default scan, but tracked content there
+# is part of the project — committed (hence odb-"saved") files must not
+# make a folder a removal candidate.
+tw="$sandbox/trackedwt"
+git clone -q "$sandbox/origin.git" "$tw" 2>/dev/null
+git -C "$tw" config user.email tidy-test@example.invalid
+git -C "$tw" config user.name tidy-test
+mkdir -p "$tw/worktrees/docs" "$tw/worktrees/leftover"
+echo "tracked content" > "$tw/worktrees/docs/notes.md"
+git -C "$tw" add worktrees/docs/notes.md
+git -C "$tw" commit -qm tracked-worktrees-content
+echo hello > "$tw/worktrees/leftover/copy.txt"   # untracked, content in odb
+tw_status=0
+quiet sh -c "cd '$tw' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || tw_status=$?
+assert "tidy exits 0 with a tracked worktrees/ dir" test "$tw_status" -eq 0
+assert "tracked folder under worktrees/ untouched" test -f "$tw/worktrees/docs/notes.md"
+assert "untracked saved leftover under worktrees/ removed" test ! -e "$tw/worktrees/leftover"
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1

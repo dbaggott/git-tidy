@@ -48,6 +48,7 @@ Configuration (git config, per repo or --global; details in the README):
   tidy.local.branches         delete (default) | keep | prompt
   tidy.local.worktrees        delete (default) | keep | prompt
   tidy.local.detachedFolders  delete (default) | keep | prompt
+  tidy.local.worktreeDirs     .worktree:.worktrees:worktrees (default)
   tidy.github.prLookup        auto (default) | off
 
   e.g.  git config --global tidy.local.worktrees prompt
@@ -283,6 +284,14 @@ first_unsaved_file() {
 
 detached_decision="$(decision_for tidy.local.detachedFolders)"
 
+# Where worktree folders live: a colon-separated list of directories whose
+# immediate children are candidates. Relative entries resolve against the
+# main checkout; a configured value replaces the default.
+worktree_dirs="$(git config --get tidy.local.worktreeDirs 2>/dev/null || true)"
+if [[ -z "$worktree_dirs" ]]; then
+  worktree_dirs=".worktree:.worktrees:worktrees"
+fi
+
 detached_dirs=()
 if [[ -n "$main_repo_dir" ]]; then
   registered_worktrees=()
@@ -292,7 +301,12 @@ if [[ -n "$main_repo_dir" ]]; then
     fi
   done < <(git worktree list --porcelain)
 
-  for base in "$main_repo_dir/.worktree" "$main_repo_dir/.worktrees"; do
+  IFS=':' read -r -a worktree_bases <<<"$worktree_dirs"
+  for base in ${worktree_bases[@]+"${worktree_bases[@]}"}; do
+    [[ -n "$base" ]] || continue
+    if [[ "$base" != /* ]]; then
+      base="$main_repo_dir/$base"
+    fi
     [[ -d "$base" ]] || continue
     for dir in "$base"/*/; do
       dir="${dir%/}"
@@ -307,7 +321,16 @@ if [[ -n "$main_repo_dir" ]]; then
           break
         fi
       done
-      (( registered )) || detached_dirs+=("$dir")
+      if (( registered )); then
+        continue
+      fi
+      # A folder holding tracked files is part of the project, not a
+      # worktree leftover — its content being in the odb (it is
+      # committed) must not make it a candidate.
+      if [[ -n "$(git -C "$main_repo_dir" ls-files -- "$canon" 2>/dev/null | head -1)" ]]; then
+        continue
+      fi
+      detached_dirs+=("$dir")
     done
   done
 fi
