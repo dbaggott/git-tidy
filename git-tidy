@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# git-tidy — clean up worktrees, stale branches, and pack objects in the current repo.
+# git-tidy — clean up finished branches and worktrees, and pack objects, in
+# the current repo.
 #
 # Default: non-interactive. Use -i to prompt before each destructive action.
 
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 print_usage() {
   cat <<'EOF'
@@ -19,26 +20,47 @@ For each repository:
   2. git worktree prune (drop admin records for missing worktree dirs)
   3. Remove detached folders under .worktree/ or .worktrees/ that git no
      longer lists as worktrees
-  4. Remove worktrees whose branch's upstream is gone
-  5. Delete local branches whose upstream is gone
+  4. Delete branches on origin whose work is finished
+  5. Delete local branches — and remove their worktrees — whose work is
+     finished
   6. If no in-progress work, switch to the default branch and ff-only pull
   7. git gc
 
-Skips the current branch, the default branch (origin/HEAD), and worktrees
-with uncommitted changes (those are reported, not forced). Step 3 removes a
-detached folder only when every file's content already exists in the repo's
-object database (i.e. was committed or staged at some point); folders with
-unsaved work are reported, not removed. Caution: content that was only ever
-staged (never committed) counts as saved, but once the folder is deleted it
-is recoverable only via `git fsck --lost-found`, and only until git prunes
-unreachable objects. Step 6 only runs when the working tree is clean and
-HEAD has no commits not on origin/<default-branch>; switching away from
-another branch additionally requires that no other worktrees exist (when
-the default branch is already checked out, the ff-only pull runs even with
-other worktrees present — it cannot disturb them).
+A branch counts as finished when the default branch already contains its
+work: its tip is reachable from origin/<default-branch> (merged, or no
+commits of its own yet), or merging it there would change nothing (covers
+squash- and rebase-merged branches; needs git >= 2.38). Work the default
+branch does not contain is never destroyed: such branches are left alone —
+including ones whose upstream is gone (e.g. a PR closed unmerged), which
+are reported. Worktrees are only removed when their working tree is clean,
+and detached folders only when every file's content already exists in the
+repo's object database (i.e. was committed or staged at some point).
+Caution: content that was only ever staged (never committed) counts as
+saved, but once the folder is deleted it is recoverable only via
+`git fsck --lost-found`, and only until git prunes unreachable objects.
+
+Step 4 only considers branches on origin that a local branch tracks; set
+tidy.remote.branchScope to widen it. Step 6 only runs when tracked files
+have no uncommitted changes (untracked files never block — switch and
+pull leave them alone) and HEAD has no commits not on
+origin/<default-branch>; switching away from another branch additionally
+requires that no other worktrees exist (when the default branch is
+already checked out, the ff-only pull runs even with other worktrees
+present — it cannot disturb them).
+
+Configuration (git config, per repo or --global). Each decision accepts
+delete, keep, or prompt; the default is delete:
+  tidy.remote.branches        finished branches on origin
+  tidy.local.branches         finished local branches
+  tidy.local.worktrees        worktrees checked out on a finished branch
+  tidy.local.detachedFolders  detached folders under .worktree[s]/
+  tidy.remote.branchScope     which origin branches are candidates:
+                              tracked (default) — only branches some
+                              local branch tracks; all — every branch
 
 Options:
-  -i, --interactive   Prompt y/N before each destructive action.
+  -i, --interactive   Prompt y/N before each destructive action (upgrades
+                      configured delete to prompt; keep stays keep).
   -V, --version       Print version and exit.
       --self-upgrade  Re-run the installer to fetch the latest version.
   -h, --help          Show this help.
@@ -105,14 +127,39 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
   exit 1
 fi
 
-confirm() {
-  if (( interactive )); then
-    local answer
-    read -r -p "$1 [y/N] " answer </dev/tty
-    [[ "$answer" =~ ^[Yy]$ ]]
-  else
-    return 0
+# Resolve a tidy.* decision key to delete | keep | prompt. Unset means
+# delete; invalid values warn and fall back to delete. -i upgrades delete
+# to prompt (keep stays keep: it is an explicit opt-out, and prompting
+# would undo it).
+decision_for() {
+  local key="$1" value
+  value="$(git config --get "$key" 2>/dev/null || true)"
+  case "$value" in
+    "") value="delete" ;;
+    delete|keep|prompt) ;;
+    *)
+      echo "git-tidy: ignoring invalid $key '$value' (expected delete, keep, or prompt)" >&2
+      value="delete"
+      ;;
+  esac
+  if (( interactive )) && [[ "$value" == "delete" ]]; then
+    value="prompt"
   fi
+  echo "$value"
+}
+
+# Whether to act on decision $1 (delete | keep | prompt); $2 is the
+# question to ask in prompt mode. 0 = act, 1 = leave as-is.
+should_act() {
+  case "$1" in
+    keep) return 1 ;;
+    prompt)
+      local answer
+      read -r -p "$2 [y/N] " answer </dev/tty
+      [[ "$answer" =~ ^[Yy]$ ]]
+      ;;
+    *) return 0 ;;
+  esac
 }
 
 current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -136,17 +183,29 @@ git fetch --all --prune
 echo "==> git worktree prune"
 git worktree prune
 
+# Print the canonical path of directory "$1" (symlinks resolved).
+canonical_dir() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
+
+cwd_canon="$(pwd -P)"
+
+# The main checkout's directory, when the repo uses a plain .git folder.
+main_repo_dir=""
+git_common_dir="$(git rev-parse --git-common-dir)"
+if [[ -d "$git_common_dir" ]]; then
+  git_common_dir="$(cd "$git_common_dir" && pwd -P)"
+fi
+if [[ "$git_common_dir" == */.git ]]; then
+  main_repo_dir="${git_common_dir%/.git}"
+fi
+
 # --- detached worktree folders ---------------------------------------------
 # When worktrees live in .worktree/ or .worktrees/ inside the main repo
 # folder, a removal can leave the directory behind after git has dropped its
 # admin record (e.g. `worktree prune` after the gitdir went missing). Such
 # folders are invisible to `git worktree list` and block reusing the path.
 # Remove them when they contain no unsaved work; report them otherwise.
-
-# Print the canonical path of directory "$1" (symlinks resolved).
-canonical_dir() {
-  (cd "$1" 2>/dev/null && pwd -P)
-}
 
 # Print the first file under "$1" whose content is not in the repo's object
 # database — evidence of work that was never committed or staged. Prints
@@ -173,14 +232,10 @@ first_unsaved_file() {
   done <<<"$listing"
 }
 
-detached_dirs=()
-git_common_dir="$(git rev-parse --git-common-dir)"
-if [[ -d "$git_common_dir" ]]; then
-  git_common_dir="$(cd "$git_common_dir" && pwd -P)"
-fi
-if [[ "$git_common_dir" == */.git ]]; then
-  main_repo_dir="${git_common_dir%/.git}"
+detached_decision="$(decision_for tidy.local.detachedFolders)"
 
+detached_dirs=()
+if [[ "$detached_decision" != "keep" && -n "$main_repo_dir" ]]; then
   registered_worktrees=()
   while IFS= read -r line; do
     if [[ "$line" == "worktree "* ]]; then
@@ -220,7 +275,7 @@ if (( ${#detached_dirs[@]} > 0 )); then
       echo "  skip $dir (unsaved work, e.g. ${unsaved#"$dir"/})"
       continue
     fi
-    if ! confirm "  remove detached folder $dir?"; then
+    if ! should_act "$detached_decision" "  remove detached folder $dir?"; then
       echo "  skip $dir"
       continue
     fi
@@ -232,8 +287,97 @@ if (( ${#detached_dirs[@]} > 0 )); then
   done
 fi
 
+# --- finished-branch detection -----------------------------------------------
+# The ref finished work is measured against: the default branch as origin
+# has it, falling back to the local default branch for remote-less repos.
+merge_target=""
+if [[ -n "$default_branch" ]]; then
+  if git show-ref --verify --quiet "refs/remotes/origin/$default_branch"; then
+    merge_target="refs/remotes/origin/$default_branch"
+  elif git show-ref --verify --quiet "refs/heads/$default_branch"; then
+    merge_target="refs/heads/$default_branch"
+  fi
+fi
+
+# git >= 2.38 can detect squash- and rebase-merged branches by asking
+# merge-tree whether merging them would change anything. Probe support with
+# a self-merge; older git falls back to ancestry-only detection.
+have_merge_tree=0
+merge_target_tree=""
+if [[ -n "$merge_target" ]]; then
+  if git merge-tree --write-tree "$merge_target" "$merge_target" >/dev/null 2>&1; then
+    have_merge_tree=1
+  fi
+  merge_target_tree="$(git rev-parse "$merge_target^{tree}")"
+fi
+
+# Does the default branch already contain all work on ref $1? True when the
+# tip is reachable from $merge_target (merged, or never started), or when
+# merging it there would leave $merge_target's tree unchanged (squash- or
+# rebase-merged). A merge conflict means "not finished".
+branch_finished() {
+  local ref="$1" merged_tree
+  if git merge-base --is-ancestor "$ref" "$merge_target" 2>/dev/null; then
+    return 0
+  fi
+  (( have_merge_tree )) || return 1
+  if ! merged_tree="$(git merge-tree --write-tree "$merge_target" "$ref" 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$merged_tree" == "$merge_target_tree" ]]
+}
+
+# --- finished remote branches ------------------------------------------------
+if [[ "$merge_target" == refs/remotes/origin/* ]]; then
+  remote_decision="$(decision_for tidy.remote.branches)"
+
+  remote_scope="$(git config --get tidy.remote.branchScope 2>/dev/null || true)"
+  case "$remote_scope" in
+    "") remote_scope="tracked" ;;
+    tracked|all) ;;
+    *)
+      echo "git-tidy: ignoring invalid tidy.remote.branchScope '$remote_scope' (expected tracked or all)" >&2
+      remote_scope="tracked"
+      ;;
+  esac
+
+  finished_remote=()
+  if [[ "$remote_decision" != "keep" ]]; then
+    # Upstreams of local branches, newline-delimited for a substring test
+    # (no associative arrays so this stays compatible with bash 3.2).
+    tracked_upstreams=$'\n'"$(git for-each-ref --format='%(upstream:short)' refs/heads)"$'\n'
+    while IFS= read -r remote_ref; do
+      name="${remote_ref#refs/remotes/origin/}"
+      if [[ "$name" == "HEAD" || "$name" == "$default_branch" ]]; then
+        continue
+      fi
+      if [[ "$remote_scope" == "tracked" && "$tracked_upstreams" != *$'\n'"origin/$name"$'\n'* ]]; then
+        continue
+      fi
+      if branch_finished "$remote_ref"; then
+        finished_remote+=("$name")
+      fi
+    done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
+  fi
+
+  if (( ${#finished_remote[@]} > 0 )); then
+    echo "==> cleaning ${#finished_remote[@]} finished remote branch(es)"
+    for name in "${finished_remote[@]}"; do
+      if ! should_act "$remote_decision" "  delete origin/$name?"; then
+        echo "  skip origin/$name"
+        continue
+      fi
+      if err="$(git push origin --delete "$name" 2>&1)"; then
+        echo "  deleted origin/$name"
+      else
+        echo "  skip origin/$name (push failed: $err)"
+      fi
+    done
+  fi
+fi
+
 # Print the worktree path for branch "$1" if any worktree has it checked out.
-# (A linear porcelain scan; called once per stale branch. No associative
+# (A linear porcelain scan; called once per finished branch. No associative
 # arrays so this stays compatible with bash 3.2.)
 worktree_for() {
   local target="refs/heads/$1" line cand_path=""
@@ -247,48 +391,118 @@ worktree_for() {
   done < <(git worktree list --porcelain)
 }
 
-gone_branches=()
-while IFS=$'\t' read -r name track; do
-  if [[ "$track" == "[gone]" ]]; then
-    gone_branches+=("$name")
-  fi
-done < <(git for-each-ref --format='%(refname:short)%09%(upstream:track)' refs/heads)
+# --- finished local branches and their worktrees -------------------------------
+local_decision="$(decision_for tidy.local.branches)"
+worktree_decision="$(decision_for tidy.local.worktrees)"
 
-if (( ${#gone_branches[@]} == 0 )); then
-  echo "==> no stale branches"
-else
-  echo "==> cleaning ${#gone_branches[@]} stale branch(es)"
-  for branch in "${gone_branches[@]}"; do
-    if [[ "$branch" == "$current_branch" ]]; then
-      echo "  skip $branch (current branch)"
+# keep is leave-as-is, quietly: with both decisions keep there is nothing
+# to do, so skip the scan rather than narrate skips every run.
+if [[ -n "$merge_target" && ( "$local_decision" != "keep" || "$worktree_decision" != "keep" ) ]]; then
+  finished_local=()
+  gone_unmerged=()
+  while IFS=$'\t' read -r name track; do
+    if [[ "$name" == "$default_branch" ]]; then
       continue
     fi
-    if [[ -n "$default_branch" && "$branch" == "$default_branch" ]]; then
-      echo "  skip $branch (default branch)"
-      continue
+    if branch_finished "refs/heads/$name"; then
+      finished_local+=("$name")
+    elif [[ "$track" == "[gone]" ]]; then
+      # The upstream was deleted (e.g. a PR closed unmerged) but the work
+      # is nowhere else — deleting the branch would destroy it.
+      gone_unmerged+=("$name")
     fi
+  done < <(git for-each-ref --format='%(refname:short)%09%(upstream:track)' refs/heads)
 
-    wt="$(worktree_for "$branch")"
-    if [[ -n "$wt" ]]; then
-      if ! confirm "  remove worktree $wt (branch $branch)?"; then
-        echo "  skip worktree $wt"
+  if (( ${#finished_local[@]} == 0 )); then
+    echo "==> no finished local branches"
+  else
+    echo "==> cleaning ${#finished_local[@]} finished local branch(es)"
+    for branch in "${finished_local[@]}"; do
+      wt="$(worktree_for "$branch")"
+      if [[ -n "$wt" ]]; then
+        wt_canon="$(canonical_dir "$wt")" || wt_canon="$wt"
+        if [[ -n "$main_repo_dir" && "$wt_canon" == "$main_repo_dir" ]]; then
+          # Checked out in the main checkout: switch that to the default
+          # branch first. The switch rides on the branch decision since it
+          # only exists to let the delete happen. Untracked files don't
+          # block the switch — git leaves them alone.
+          if [[ "$local_decision" == "keep" ]]; then
+            continue
+          fi
+          if [[ -n "$(git -C "$wt" status --porcelain -uno)" ]]; then
+            echo "  skip branch $branch (checked out at $wt; tracked files have uncommitted changes)"
+            continue
+          fi
+          if ! should_act "$local_decision" "  switch $wt to $default_branch and delete branch $branch?"; then
+            echo "  skip branch $branch"
+            continue
+          fi
+          if err="$(git -C "$wt" switch --quiet "$default_branch" 2>&1)"; then
+            echo "  switched $wt to $default_branch"
+            if [[ "$branch" == "$current_branch" ]]; then
+              current_branch="$default_branch"
+            fi
+          else
+            echo "  skip branch $branch (cannot switch to $default_branch: $err)"
+            continue
+          fi
+          if err="$(git branch -D "$branch" 2>&1)"; then
+            echo "  deleted branch $branch"
+          else
+            echo "  skip branch $branch ($err)"
+          fi
+          continue
+        fi
+        # Checked out in a secondary worktree: remove the worktree (its own
+        # decision), then the branch. keep is quiet — the branch stays
+        # checked out there, so there is nothing further to say.
+        if [[ "$worktree_decision" == "keep" ]]; then
+          continue
+        fi
+        if [[ "$cwd_canon" == "$wt_canon" || "$cwd_canon" == "$wt_canon"/* ]]; then
+          echo "  skip branch $branch (checked out in current worktree $wt)"
+          continue
+        fi
+        if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
+          echo "  skip worktree $wt (working tree not clean)"
+          echo "  skip branch $branch (still checked out at $wt)"
+          continue
+        fi
+        if ! should_act "$worktree_decision" "  remove worktree $wt (branch $branch)?"; then
+          echo "  skip worktree $wt"
+          echo "  skip branch $branch (still checked out at $wt)"
+          continue
+        fi
+        if err="$(git worktree remove "$wt" 2>&1)"; then
+          echo "  removed worktree $wt"
+        else
+          echo "  skip worktree $wt: $err"
+          echo "  skip branch $branch (still checked out at $wt)"
+          continue
+        fi
+      fi
+
+      if [[ "$local_decision" == "keep" ]]; then
         continue
       fi
-      if err="$(git worktree remove "$wt" 2>&1)"; then
-        echo "  removed worktree $wt"
+      if ! should_act "$local_decision" "  delete branch $branch?"; then
+        echo "  skip branch $branch"
+        continue
+      fi
+      if err="$(git branch -D "$branch" 2>&1)"; then
+        echo "  deleted branch $branch"
       else
-        echo "  skip worktree $wt: $err"
-        continue
+        echo "  skip branch $branch ($err)"
       fi
-    fi
+    done
+  fi
 
-    if ! confirm "  delete branch $branch?"; then
-      echo "  skip branch $branch"
-      continue
-    fi
-    git branch -D "$branch" >/dev/null
-    echo "  deleted branch $branch"
-  done
+  if (( ${#gone_unmerged[@]} > 0 )); then
+    echo "==> keeping ${#gone_unmerged[@]} branch(es) with work not on origin/$default_branch"
+    for branch in "${gone_unmerged[@]}"; do
+      echo "  keep $branch (upstream gone)"
+    done
+  fi
 fi
 
 # Sync the main checkout to the default branch when nothing is in progress.
@@ -306,10 +520,12 @@ if [[ -n "$default_branch" ]]; then
   # Other worktrees signal in-progress work, so leave the checked-out
   # branch alone — but a ff-only pull cannot disturb them, so they don't
   # block syncing when the default branch is already checked out.
+  # Untracked files don't block either (-uno): switch and pull leave them
+  # alone, and worktrees kept under .worktree[s]/ always show as untracked.
   if [[ "$current_branch" != "$default_branch" ]] && (( other_worktrees > 0 )); then
     in_progress_reason="$other_worktrees other worktree(s) present"
-  elif [[ -n "$(git status --porcelain)" ]]; then
-    in_progress_reason="working tree not clean"
+  elif [[ -n "$(git status --porcelain -uno)" ]]; then
+    in_progress_reason="tracked files have uncommitted changes"
   elif [[ -n "$current_branch" ]]; then
     if ahead="$(git rev-list --count "origin/$default_branch..HEAD" 2>/dev/null)"; then
       if [[ "$ahead" != "0" ]]; then
