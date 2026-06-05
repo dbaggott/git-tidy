@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 print_usage() {
   cat <<'EOF'
@@ -70,7 +70,9 @@ Options:
   -i, --interactive   Prompt y/N before each destructive action (upgrades
                       configured delete to prompt; keep stays keep).
   -V, --version       Print version and exit.
-      --self-upgrade  Re-run the installer to fetch the latest version.
+      --self-upgrade  Fetch the latest version: a Homebrew-managed
+                      install upgrades via brew upgrade git-tidy; any
+                      other install re-runs the installer.
   -h, --help          Show this help.
 EOF
 }
@@ -85,6 +87,33 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     --self-upgrade)
+      # A Homebrew-managed copy upgrades through brew: re-running the curl
+      # installer would leave a second install in ~/.local/bin, shadowing
+      # or shadowed by this one depending on PATH order. Detect brew by
+      # resolving the running script's own path into the Cellar.
+      self="${BASH_SOURCE[0]}"
+      # Follow file symlinks (hop-capped: a symlink cycle must not hang
+      # the flag), then canonicalize the directory — brew's opt/ path
+      # symlinks the directory rather than the file, so following file
+      # symlinks alone would miss it.
+      hops=0
+      while [[ -L "$self" ]] && (( hops < 40 )); do
+        link="$(readlink "$self")"
+        [[ "$link" == /* ]] || link="$(dirname "$self")/$link"
+        self="$link"
+        hops=$((hops + 1))
+      done
+      if self_dir="$(cd "$(dirname "$self")" 2>/dev/null && pwd -P)"; then
+        self="$self_dir/$(basename "$self")"
+      fi
+      if [[ "$self" == */Cellar/git-tidy/* ]]; then
+        if command -v brew >/dev/null 2>&1; then
+          echo "git-tidy: Homebrew install detected; running brew upgrade git-tidy..."
+          exec brew upgrade git-tidy
+        fi
+        echo "git-tidy: this copy is Homebrew-managed but brew is not on PATH; upgrade with: brew upgrade git-tidy" >&2
+        exit 1
+      fi
       echo "git-tidy: fetching latest installer..."
       exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/dbaggott/git-tidy/main/install.sh)"
       ;;
@@ -627,7 +656,13 @@ if [[ -n "$default_branch" ]]; then
   fi
 
   if [[ -n "$in_progress_reason" ]]; then
-    echo "==> skip sync to $default_branch ($in_progress_reason)"
+    # Name the parked branch: "HEAD has commits..." without saying where
+    # HEAD is sends the user off to find out.
+    if [[ -n "$current_branch" && "$current_branch" != "$default_branch" ]]; then
+      echo "==> skip sync to $default_branch (on $current_branch: $in_progress_reason)"
+    else
+      echo "==> skip sync to $default_branch ($in_progress_reason)"
+    fi
   else
     # Both steps can fail in normal use now that untracked files don't
     # gate sync (e.g. an untracked file an incoming tracked one would

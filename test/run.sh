@@ -149,7 +149,7 @@ parked_status=0
 out_parked="$( (cd "$sync" && run_tidy) 2>&1 )" || parked_status=$?
 assert "tidy exits 0 on parked branch" test "$parked_status" -eq 0
 assert "unmerged work blocks the switch; the worktree alone does not" \
-  quiet grep "skip sync to $branch (HEAD has 1 commit(s) not on origin/$branch)" <<<"$out_parked"
+  quiet grep "skip sync to $branch (on parked: HEAD has 1 commit(s) not on origin/$branch)" <<<"$out_parked"
 assert "still on parked branch" \
   test "$(git -C "$sync" symbolic-ref --short HEAD)" = parked
 
@@ -305,7 +305,7 @@ assert "current worktree's branch kept" quiet git -C "$guard" show-ref --verify 
 assert "current worktree skip reported" \
   quiet grep "skip (checked out in current worktree" <<<"$out_inside"
 assert "default branch held elsewhere reported as the sync blocker" \
-  quiet grep "skip sync to $branch ($branch checked out at" <<<"$out_inside"
+  quiet grep "skip sync to $branch (on inside: $branch checked out at" <<<"$out_inside"
 
 # Main checkout on a finished branch with uncommitted tracked changes: the
 # switch-away is blocked, so the branch survives.
@@ -548,6 +548,41 @@ assert "branch with unique work kept in remote-less repo" \
   quiet git -C "$solo" show-ref --verify refs/heads/active
 assert "sync skip reported without origin" \
   quiet grep "skip sync to main (cannot compare HEAD to origin/main)" <<<"$out_solo"
+
+# --- --self-upgrade routes a Homebrew-managed install through brew ----------
+cellar_bin="$sandbox/homebrew/Cellar/git-tidy/9.9.9/bin"
+mkdir -p "$cellar_bin" "$sandbox/homebrew/bin" "$sandbox/stubbin"
+cp "$tidy_dir/git-tidy" "$cellar_bin/git-tidy"
+chmod +x "$cellar_bin/git-tidy"
+ln -s "../Cellar/git-tidy/9.9.9/bin/git-tidy" "$sandbox/homebrew/bin/git-tidy"
+cat > "$sandbox/stubbin/brew" <<'STUB'
+#!/bin/sh
+echo "brew-stub: $*"
+STUB
+chmod +x "$sandbox/stubbin/brew"
+bu_status=0
+out_bu="$(PATH="$sandbox/stubbin:$PATH" "$TIDY_BASH" "$sandbox/homebrew/bin/git-tidy" --self-upgrade 2>&1)" || bu_status=$?
+assert "--self-upgrade exits 0 for a brew install" test "$bu_status" -eq 0
+assert "brew install detected" quiet grep "Homebrew install detected" <<<"$out_bu"
+assert "upgrade routed through brew" quiet grep "brew-stub: upgrade git-tidy" <<<"$out_bu"
+assert_not "curl installer not run for a brew install" quiet grep "fetching latest installer" <<<"$out_bu"
+
+# brew's opt/ path symlinks the directory, not the file — must still detect
+mkdir -p "$sandbox/homebrew/opt"
+ln -s "../Cellar/git-tidy/9.9.9" "$sandbox/homebrew/opt/git-tidy"
+opt_status=0
+out_opt="$(PATH="$sandbox/stubbin:$PATH" "$TIDY_BASH" "$sandbox/homebrew/opt/git-tidy/bin/git-tidy" --self-upgrade 2>&1)" || opt_status=$?
+assert "--self-upgrade exits 0 via the opt/ path" test "$opt_status" -eq 0
+assert "brew detected through a directory symlink" quiet grep "brew-stub: upgrade git-tidy" <<<"$out_opt"
+assert_not "curl installer not run via the opt/ path" quiet grep "fetching latest installer" <<<"$out_opt"
+
+# brew-managed copy but brew not on PATH: explain and stop
+sys_bash="$(command -v "$TIDY_BASH")"
+nobrew_status=0
+out_nobrew="$(PATH=/usr/bin:/bin "$sys_bash" "$cellar_bin/git-tidy" --self-upgrade 2>&1)" || nobrew_status=$?
+assert "--self-upgrade exits 1 without brew on PATH" test "$nobrew_status" -eq 1
+assert "missing brew explained" quiet grep "upgrade with: brew upgrade git-tidy" <<<"$out_nobrew"
+assert_not "curl installer not run without brew" quiet grep "fetching latest installer" <<<"$out_nobrew"
 
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
