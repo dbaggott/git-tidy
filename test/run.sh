@@ -602,11 +602,20 @@ STUB
 chmod +x "$sandbox/ghstub/gh"
 
 # Lookup off: the conflicted branch stays unjudged and kept.
-git -C "$ghx" config tidy.github.prLookup off
+git -C "$ghx" config tidy.prLookup off
 ghx_off_status=0
 quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_off_status=$?
 assert "tidy exits 0 with prLookup off" test "$ghx_off_status" -eq 0
 assert "conflicted branch kept with prLookup off" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
+git -C "$ghx" config --unset tidy.prLookup
+
+# The key's pre-1.3.0 name is still honored.
+git -C "$ghx" config tidy.github.prLookup off
+ghx_legacy_status=0
+quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_legacy_status=$?
+assert "tidy exits 0 with the legacy prLookup key" test "$ghx_legacy_status" -eq 0
+assert "legacy key still disables the lookup" \
   quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
 
 # Unauthenticated gh: the gate closes silently and the branch is kept.
