@@ -445,6 +445,34 @@ assert "pull failure reported" quiet grep "pull failed; leaving the checkout as-
 assert "run completes after pull failure" quiet grep "==> done" <<<"$out_coll"
 assert "untracked file preserved" test "$(cat "$coll/scratch.txt")" = local-scratch
 
+# --- mixed keep configs stay observable: kept items are counted -------------
+mixed="$sandbox/mixed"
+git clone -q "$sandbox/origin.git" "$mixed" 2>/dev/null
+git -C "$mixed" config user.email tidy-test@example.invalid
+git -C "$mixed" config user.name tidy-test
+git -C "$mixed" config tidy.local.branches keep
+git -C "$mixed" worktree add -q "$mixed/.worktrees/mw" -b mw "$branch"
+git -C "$mixed" branch -q mb "$branch"
+mixed_status=0
+out_mixed="$( (cd "$mixed" && run_tidy) 2>&1 )" || mixed_status=$?
+assert "tidy exits 0 with branches keep + worktrees delete" test "$mixed_status" -eq 0
+assert "worktree removed in mixed config" test ! -e "$mixed/.worktrees/mw"
+assert "branches kept in mixed config" quiet git -C "$mixed" show-ref --verify refs/heads/mb
+assert "kept branches counted in mixed config" \
+  quiet grep "kept 2 branch(es) (tidy.local.branches keep)" <<<"$out_mixed"
+
+git -C "$mixed" config tidy.local.branches delete
+git -C "$mixed" config tidy.local.worktrees keep
+git -C "$mixed" worktree add -q "$mixed/.worktrees/mw2" -b mw2 "$branch"
+mixed2_status=0
+out_mixed2="$( (cd "$mixed" && run_tidy) 2>&1 )" || mixed2_status=$?
+assert "tidy exits 0 with branches delete + worktrees keep" test "$mixed2_status" -eq 0
+assert "worktree kept in reverse mixed config" test -d "$mixed/.worktrees/mw2"
+assert_not "unencumbered branch deleted in reverse mixed config" \
+  quiet git -C "$mixed" show-ref --verify refs/heads/mb
+assert "kept worktrees counted in reverse mixed config" \
+  quiet grep "kept 1 worktree(s) (tidy.local.worktrees keep)" <<<"$out_mixed2"
+
 # --- recursive mode: hidden directories (vendored checkouts) not searched ---
 tree="$sandbox/tree"
 mkdir -p "$tree"

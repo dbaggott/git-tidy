@@ -412,10 +412,10 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
       # our fetch, so refuse if origin has moved since — a push that
       # landed in between must not be destroyed.
       if err="$(git push --force-with-lease="refs/heads/$name:$(git rev-parse "refs/remotes/origin/$name")" \
-                  origin ":refs/heads/$name" 2>&1 | tr '\n' ' ')"; then
+                  origin ":refs/heads/$name" 2>&1)"; then
         echo "  deleted origin/$name"
       else
-        echo "  skip origin/$name (push failed: $err)"
+        echo "  skip origin/$name (push failed: ${err//$'\n'/ })"
       fi
     done
   fi
@@ -467,6 +467,10 @@ if [[ -n "$merge_target" ]]; then
     echo "==> no finished local branches"
   else
     echo "==> cleaning ${#finished_local[@]} finished local branch(es)"
+    # In mixed configurations one decision can be keep while the other
+    # acts; count what the keep gates swallow so the header still adds up.
+    kept_branches=0
+    kept_worktrees=0
     for branch in "${finished_local[@]}"; do
       wt="$(worktree_for "$branch")"
       if [[ -n "$wt" ]]; then
@@ -477,6 +481,7 @@ if [[ -n "$merge_target" ]]; then
           # only exists to let the delete happen. Untracked files don't
           # block the switch — git leaves them alone.
           if [[ "$local_decision" == "keep" ]]; then
+            kept_branches=$((kept_branches + 1))
             continue
           fi
           if [[ -n "$(git -C "$wt" status --porcelain -uno)" ]]; then
@@ -504,9 +509,10 @@ if [[ -n "$merge_target" ]]; then
           continue
         fi
         # Checked out in a secondary worktree: remove the worktree (its own
-        # decision), then the branch. keep is quiet — the branch stays
-        # checked out there, so there is nothing further to say.
+        # decision), then the branch. Under keep the branch stays checked
+        # out there, so there is nothing further to do for it either.
         if [[ "$worktree_decision" == "keep" ]]; then
+          kept_worktrees=$((kept_worktrees + 1))
           continue
         fi
         if [[ "$cwd_canon" == "$wt_canon" || "$cwd_canon" == "$wt_canon"/* ]]; then
@@ -533,6 +539,7 @@ if [[ -n "$merge_target" ]]; then
       fi
 
       if [[ "$local_decision" == "keep" ]]; then
+        kept_branches=$((kept_branches + 1))
         continue
       fi
       if ! should_act "$local_decision" "  delete branch $branch?"; then
@@ -545,6 +552,12 @@ if [[ -n "$merge_target" ]]; then
         echo "  skip branch $branch ($err)"
       fi
     done
+    if (( kept_branches > 0 )); then
+      echo "  kept $kept_branches branch(es) (tidy.local.branches keep)"
+    fi
+    if (( kept_worktrees > 0 )); then
+      echo "  kept $kept_worktrees worktree(s) (tidy.local.worktrees keep)"
+    fi
   fi
 
   if (( ${#gone_unmerged[@]} > 0 )); then
@@ -599,8 +612,8 @@ if [[ -n "$default_branch" ]]; then
     # overwrite) — report and carry on so gc still runs.
     if [[ "$current_branch" != "$default_branch" ]]; then
       echo "==> git switch $default_branch"
-      if ! err="$(git switch --quiet "$default_branch" 2>&1 | tr '\n' ' ')"; then
-        echo "  skip switch ($err)"
+      if ! err="$(git switch --quiet "$default_branch" 2>&1)"; then
+        echo "  skip switch (${err//$'\n'/ })"
       fi
     fi
     if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "$default_branch" ]]; then
