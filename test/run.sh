@@ -708,6 +708,46 @@ assert "--self-upgrade exits 1 without brew on PATH" test "$nobrew_status" -eq 1
 assert "missing brew explained" quiet grep "upgrade with: brew upgrade git-tidy" <<<"$out_nobrew"
 assert_not "curl installer not run without brew" quiet grep "fetching latest installer" <<<"$out_nobrew"
 
+# --- a dead remote must not abort the run --------------------------------
+dr="$sandbox/deadremote"
+git clone -q "$sandbox/origin.git" "$dr" 2>/dev/null
+git -C "$dr" config user.email tidy-test@example.invalid
+git -C "$dr" config user.name tidy-test
+git -C "$dr" remote add dead /nonexistent-remote-path
+git -C "$dr" branch -q dr-stale
+dr_status=0
+out_dr="$( (cd "$dr" && run_tidy) 2>&1 )" || dr_status=$?
+assert "tidy exits 0 despite a dead remote" test "$dr_status" -eq 0
+assert "fetch failure reported and survived" \
+  quiet grep "fetch failed (continuing with the already-fetched state)" <<<"$out_dr"
+assert_not "cleanup still ran after the failed fetch" \
+  quiet git -C "$dr" show-ref --verify refs/heads/dr-stale
+assert "run completed after the failed fetch" quiet grep "==> done" <<<"$out_dr"
+
+# --- missing origin/HEAD is repaired so non-main defaults still resolve -----
+trunk_seed="$sandbox/trunk-seed"
+git init -q -b trunk "$trunk_seed"
+git -C "$trunk_seed" config user.email tidy-test@example.invalid
+git -C "$trunk_seed" config user.name tidy-test
+echo t > "$trunk_seed/t.txt"
+git -C "$trunk_seed" add t.txt
+git -C "$trunk_seed" commit -qm trunk-initial
+git init -q --bare "$sandbox/trunk-origin.git"
+git -C "$sandbox/trunk-origin.git" symbolic-ref HEAD refs/heads/trunk
+git -C "$trunk_seed" remote add origin "$sandbox/trunk-origin.git"
+git -C "$trunk_seed" push -q origin trunk
+trunkc="$sandbox/trunkc"
+git clone -q "$sandbox/trunk-origin.git" "$trunkc" 2>/dev/null
+git -C "$trunkc" remote set-head origin -d
+git -C "$trunkc" branch -q tnb
+trunk_status=0
+quiet sh -c "cd '$trunkc' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || trunk_status=$?
+assert "tidy exits 0 with missing origin/HEAD" test "$trunk_status" -eq 0
+assert "origin/HEAD repaired" \
+  test "$(git -C "$trunkc" symbolic-ref refs/remotes/origin/HEAD)" = refs/remotes/origin/trunk
+assert_not "redundant branch cleaned once the default resolved" \
+  quiet git -C "$trunkc" show-ref --verify refs/heads/tnb
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1

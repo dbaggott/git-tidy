@@ -112,7 +112,7 @@ updates the Homebrew tap formula — merging the bump is the whole release.
 
 ## Requirements
 
-Bash 3.2+ and `git`. macOS ships bash 3.2, which is supported — no separate `brew install bash` needed.
+Bash 3.2+ and git ≥ 2.23; git ≥ 2.38 additionally enables squash/rebase-merge detection by content (older git falls back to ancestry plus the GitHub PR lookup). macOS ships bash 3.2, which is supported — no separate `brew install bash` needed.
 
 ## License
 
