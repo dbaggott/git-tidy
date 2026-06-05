@@ -803,6 +803,50 @@ assert "tidy exits 0 with a tracked worktrees/ dir" test "$tw_status" -eq 0
 assert "tracked folder under worktrees/ untouched" test -f "$tw/worktrees/docs/notes.md"
 assert "untracked saved leftover under worktrees/ removed" test ! -e "$tw/worktrees/leftover"
 
+# --- --offline: no network, local cleanup still runs ------------------------
+off="$sandbox/offline"
+git clone -q "$sandbox/origin.git" "$off" 2>/dev/null
+git -C "$off" config user.email tidy-test@example.invalid
+git -C "$off" config user.name tidy-test
+git -C "$off" switch -qc off-merged --no-track "origin/$branch"
+echo om > "$off/om.txt"
+git -C "$off" add om.txt
+git -C "$off" commit -qm off-merged-work
+git -C "$off" push -q -u origin off-merged
+git -C "$off" switch -q "$branch"
+quiet git -C "$off" merge --no-ff -m merge-om off-merged
+git -C "$off" push -q origin "HEAD:$branch"
+git -C "$off" fetch -q origin
+off_status=0
+out_off="$( (cd "$off" && "$TIDY_BASH" "$tidy_dir/git-tidy" --offline) 2>&1 )" || off_status=$?
+assert "tidy exits 0 offline" test "$off_status" -eq 0
+assert "offline fetch skip narrated" quiet grep -- "skip fetch (--offline)" <<<"$out_off"
+assert_not "redundant local branch cleaned offline" \
+  quiet git -C "$off" show-ref --verify refs/heads/off-merged
+assert "remote branch untouched offline" \
+  quiet grep "refs/heads/off-merged$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert "remote cleanup skip narrated offline" \
+  quiet grep "skip remote branch cleanup (origin not fetched this run)" <<<"$out_off"
+assert "pull skip narrated offline" \
+  quiet grep "skip pull (origin not fetched this run)" <<<"$out_off"
+
+# --- unreachable origin: the same gates engage automatically ----------------
+unr="$sandbox/unreach"
+git clone -q "$sandbox/origin.git" "$unr" 2>/dev/null
+git -C "$unr" config user.email tidy-test@example.invalid
+git -C "$unr" config user.name tidy-test
+git -C "$unr" branch -q unr-stale
+git -C "$unr" remote set-url origin /nonexistent-origin-path
+unr_status=0
+out_unr="$( (cd "$unr" && run_tidy) 2>&1 )" || unr_status=$?
+assert "tidy exits 0 with unreachable origin" test "$unr_status" -eq 0
+assert "fetch failure survived with unreachable origin" \
+  quiet grep "fetch failed (continuing with the already-fetched state)" <<<"$out_unr"
+assert_not "local cleanup still ran with unreachable origin" \
+  quiet git -C "$unr" show-ref --verify refs/heads/unr-stale
+assert "remote cleanup skipped with unreachable origin" \
+  quiet grep "skip remote branch cleanup (origin not fetched this run)" <<<"$out_unr"
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1

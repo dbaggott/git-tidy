@@ -14,7 +14,7 @@ git-tidy — return a repository to a clean baseline: delete branches,
 worktrees, and leftover folders whose work the default branch already
 contains, then sync the checkout to a fresh default branch.
 
-Usage: git tidy [-i|--interactive] [DIR]
+Usage: git tidy [-i|--interactive] [--offline] [DIR]
 
 Without DIR: tidies the current git repository.
 With DIR:    tidies every repository under DIR. Hidden directories are
@@ -37,6 +37,9 @@ uncommitted changes, and folders holding unsaved files.
 
 Options:
   -i, --interactive   Ask y/N before each destructive action.
+      --offline       Skip the network: no fetch, no remote deletions,
+                      no pull. Local cleanup runs against the
+                      last-fetched state.
   -V, --version       Print version and exit.
       --self-upgrade  Fetch the latest version (brew upgrade for
                       Homebrew installs; the installer otherwise).
@@ -57,10 +60,12 @@ EOF
 }
 
 interactive=0
+offline=0
 target_dir=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -i|--interactive) interactive=1; shift ;;
+    --offline) offline=1; shift ;;
     -V|--version)
       echo "git-tidy $VERSION"
       exit 0
@@ -137,7 +142,8 @@ if [[ -n "$target_dir" ]]; then
     exit 1
   fi
   pass_args=()
-  (( interactive )) && pass_args=(-i)
+  (( interactive )) && pass_args+=(-i)
+  (( offline )) && pass_args+=(--offline)
   status=0
   while IFS= read -r gitdir; do
     repo="${gitdir%/.git}"
@@ -196,7 +202,6 @@ should_act() {
 
 current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
-echo "==> git fetch --all --prune"
 # A failed fetch (offline, a dead remote among several) must not abort
 # the run: tidying against the last-fetched state is safe. Staleness
 # only under-detects redundancy — work contained in an old tip is still
@@ -205,30 +210,36 @@ echo "==> git fetch --all --prune"
 # fetch-to-judge race; the commits stay recoverable from the odb until
 # gc expiry) — and remote deletion is lease-protected against the stale
 # OID, so a branch that moved since rejects.
-fetch_ok=1
-if ! git fetch --all --prune; then
-  fetch_ok=0
-  echo "  fetch failed (continuing with the already-fetched state)"
-fi
-
-# fetch --all fails when ANY remote fails; origin itself may be fine,
-# and everything below that needs freshness needs only origin.
-origin_ok="$fetch_ok"
-if (( ! fetch_ok )) && git config --get remote.origin.url >/dev/null 2>&1; then
-  if git fetch origin --prune >/dev/null 2>&1; then
-    origin_ok=1
+origin_ok=0
+if (( offline )); then
+  echo "==> skip fetch (--offline)"
+else
+  echo "==> git fetch --all --prune"
+  fetch_ok=1
+  if ! git fetch --all --prune; then
+    fetch_ok=0
+    echo "  fetch failed (continuing with the already-fetched state)"
   fi
-fi
 
-# Old clones often lack refs/remotes/origin/HEAD, and the local-branch
-# fallback below only guesses main/master — a repo whose default branch
-# is named anything else silently loses most of tidy. Repair the ref
-# while origin is known reachable. (git >= 2.45 fetch maintains the ref
-# itself, making this a no-op there; this covers older git.)
-if (( origin_ok )) && git config --get remote.origin.url >/dev/null 2>&1 \
-   && ! git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
-  if git remote set-head origin -a >/dev/null 2>&1; then
-    echo "  repaired origin/HEAD (was unset)"
+  # fetch --all fails when ANY remote fails; origin itself may be fine,
+  # and everything below that needs the network needs only origin.
+  origin_ok="$fetch_ok"
+  if (( ! fetch_ok )) && git config --get remote.origin.url >/dev/null 2>&1; then
+    if git fetch origin --prune >/dev/null 2>&1; then
+      origin_ok=1
+    fi
+  fi
+
+  # Old clones often lack refs/remotes/origin/HEAD, and the local-branch
+  # fallback below only guesses main/master — a repo whose default branch
+  # is named anything else silently loses most of tidy. Repair the ref
+  # while origin is known reachable. (git >= 2.45 fetch maintains the ref
+  # itself, making this a no-op there; this covers older git.)
+  if (( origin_ok )) && git config --get remote.origin.url >/dev/null 2>&1 \
+     && ! git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+    if git remote set-head origin -a >/dev/null 2>&1; then
+      echo "  repaired origin/HEAD (was unset)"
+    fi
   fi
 fi
 
@@ -432,6 +443,9 @@ github_lookup_state=""  # probed lazily on the first conflict: "yes" / "no"
 github_lookup_available() {
   if [[ -z "$github_lookup_state" ]]; then
     github_lookup_state="no"
+    if (( ! origin_ok )); then
+      return 1
+    fi
     local setting origin_url
     setting="$(git config --get tidy.prLookup 2>/dev/null || true)"
     if [[ -z "$setting" ]]; then
@@ -510,7 +524,11 @@ branch_redundant() {
 }
 
 # --- redundant remote branches ------------------------------------------------
-if [[ "$merge_target" == refs/remotes/origin/* ]]; then
+# Deleting on origin needs origin: skip the section rather than letting
+# every push attempt time out against an unreachable remote.
+if [[ "$merge_target" == refs/remotes/origin/* ]] && (( ! origin_ok )); then
+  echo "==> skip remote branch cleanup (origin not fetched this run)"
+elif [[ "$merge_target" == refs/remotes/origin/* ]]; then
   remote_decision="$(decision_for tidy.remote.branches)"
 
   remote_scope="$(git config --get tidy.remote.branchScope 2>/dev/null || true)"
@@ -812,9 +830,13 @@ if [[ -n "$default_branch" ]]; then
       fi
     fi
     if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "$default_branch" ]]; then
-      echo "==> git pull --ff-only"
-      if ! git pull --ff-only; then
-        echo "  pull failed; leaving the checkout as-is"
+      if (( origin_ok )); then
+        echo "==> git pull --ff-only"
+        if ! git pull --ff-only; then
+          echo "  pull failed; leaving the checkout as-is"
+        fi
+      else
+        echo "==> skip pull (origin not fetched this run)"
       fi
     fi
   fi

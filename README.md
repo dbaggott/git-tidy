@@ -95,12 +95,13 @@ Upgrade with `git pull && make install`.
 ## Usage
 
 ```
-git tidy [-i|--interactive] [DIR]
+git tidy [-i|--interactive] [--offline] [DIR]
 ```
 
 | Flag | Effect |
 |------|--------|
 | `-i`, `--interactive` | Prompt `y/N` before each destructive action |
+| `--offline` | Skip the network: no fetch, no remote deletions, no pull — local cleanup runs against the last-fetched state |
 | `-V`, `--version` | Print version |
 | `--self-upgrade` | Re-run the installer to fetch the latest version |
 | `-h`, `--help` | Show full help |
