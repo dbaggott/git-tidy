@@ -395,7 +395,7 @@ github_lookup_available() {
       # rewrites, which can hide the real host.
       origin_url="$(git config --get remote.origin.url 2>/dev/null || true)"
       case "$origin_url" in
-        *github.com[:/]*)
+        *[/@]github.com[:/]*)
           if gh auth status >/dev/null 2>&1; then
             github_lookup_state="yes"
           fi
@@ -420,7 +420,7 @@ github_merged_pr() {
   else
     name="${ref#refs/remotes/origin/}"
     name="${name#refs/heads/}"
-    url="$(gh pr list --head "$name" --state merged \
+    url="$(gh pr list --head "$name" --state merged --limit 100 \
              --json headRefOid,url \
              --jq "[.[] | select(.headRefOid == \"$oid\") | .url][0] // empty" \
              2>/dev/null || true)"

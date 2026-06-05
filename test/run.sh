@@ -609,8 +609,18 @@ assert "tidy exits 0 with prLookup off" test "$ghx_off_status" -eq 0
 assert "conflicted branch kept with prLookup off" \
   quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
 
-# Lookup on (default auto): the merged PR vouches; the impostor stays.
+# Unauthenticated gh: the gate closes silently and the branch is kept.
 git -C "$ghx" config --unset tidy.github.prLookup
+mkdir -p "$sandbox/ghstub-noauth"
+printf '#!/bin/sh\nexit 1\n' > "$sandbox/ghstub-noauth/gh"
+chmod +x "$sandbox/ghstub-noauth/gh"
+ghx_noauth_status=0
+quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub-noauth':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_noauth_status=$?
+assert "tidy exits 0 with unauthenticated gh" test "$ghx_noauth_status" -eq 0
+assert "conflicted branch kept when gh auth fails" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
+
+# Lookup on (default auto): the merged PR vouches; the impostor stays.
 ghx_status=0
 out_ghx="$( (cd "$ghx" && PATH="$sandbox/ghstub:$PATH" run_tidy) 2>&1 )" || ghx_status=$?
 assert "tidy exits 0 with PR lookup" test "$ghx_status" -eq 0
