@@ -47,7 +47,7 @@ git clone -q "$sandbox/origin.git" "$repo" 2>/dev/null
 git -C "$repo" config user.email tidy-test@example.invalid
 git -C "$repo" config user.name tidy-test
 # Pin branch/worktree cleanup to keep: this fixture's branches all count as
-# finished (no commits of their own), and keeping them both isolates the
+# redundant (no commits of their own), and keeping them both isolates the
 # detached-folder assertions and exercises the keep configuration.
 git -C "$repo" config tidy.remote.branches keep
 git -C "$repo" config tidy.local.branches keep
@@ -91,11 +91,11 @@ assert "dirty detached folder reported" quiet grep "skip .*wt-dirty (unsaved wor
 assert "registered worktree untouched" quiet git -C "$repo/.worktrees/wt-live" rev-parse --verify HEAD
 assert "folder containing a nested registered worktree untouched" \
   quiet git -C "$repo/.worktrees/nested/inner" rev-parse --verify HEAD
-assert "keep config leaves finished branch alone" \
+assert "keep config leaves redundant branch alone" \
   git -C "$repo" show-ref --verify --quiet refs/heads/wt-clean
 assert_not "keep config is quiet about kept branches" quiet grep "^    skip" <<<"$out"
-assert "kept finished branches summarized" \
-  quiet grep "keeping 4 finished local branch(es) (tidy.local.branches keep)" <<<"$out"
+assert "kept redundant branches summarized" \
+  quiet grep "keeping 4 redundant local branch(es) (tidy.local.branches keep)" <<<"$out"
 if [[ "$(id -u)" != 0 ]]; then  # root can read through chmod 000
   assert "unreadable folder kept" test -d "$repo/.worktrees/locked"
   assert "unreadable folder reported" quiet grep "skip .*locked (not fully readable)" <<<"$out"
@@ -127,7 +127,7 @@ echo update > "$sandbox/sync-wt/update.txt"
 git -C "$sandbox/sync-wt" add update.txt
 git -C "$sandbox/sync-wt" commit -qm update
 git -C "$sandbox/sync-wt" push -q origin "HEAD:refs/heads/$branch"
-# Unfinished work on top keeps the branch and worktree alive through tidy.
+# Unmerged work on top keeps the branch and worktree alive through tidy.
 echo wip > "$sandbox/sync-wt/wip.txt"
 git -C "$sandbox/sync-wt" add wip.txt
 git -C "$sandbox/sync-wt" commit -qm wip
@@ -141,7 +141,7 @@ assert "pull reported" quiet grep -- "git pull --ff-only" <<<"$out_sync"
 assert_not "no sync skip when only a pull is needed" quiet grep "skip sync" <<<"$out_sync"
 
 git -C "$sync" switch -qc parked
-# Unfinished work parks the branch; without it tidy would clean it up.
+# Unmerged work parks the branch; without it tidy would clean it up.
 echo parked-work > "$sync/parked.txt"
 git -C "$sync" add parked.txt
 git -C "$sync" commit -qm parked-work
@@ -153,7 +153,7 @@ assert "unmerged work blocks the switch; the worktree alone does not" \
 assert "still on parked branch" \
   test "$(git -C "$sync" symbolic-ref --short HEAD)" = parked
 
-# --- finished branches: the full remote + local + worktree lifecycle --------
+# --- redundant branches: the full remote + local + worktree lifecycle --------
 # One clone ("life") holds branches in every state of the PR lifecycle; a
 # second clone ("dev") plays the server side — merging, squash-merging, and
 # deleting branches on origin.
@@ -211,13 +211,13 @@ git -C "$life" push -q -u origin gone-unmerged
 # never-started: no commits of its own
 git -C "$life" branch -q never-started "$base"
 
-# live-wt: a worktree with unfinished committed work — must survive
+# live-wt: a worktree with unmerged committed work — must survive
 git -C "$life" worktree add -q "$life/.worktrees/live-wt" -b live-wt "$branch"
 echo lw > "$life/.worktrees/live-wt/lw.txt"
 git -C "$life/.worktrees/live-wt" add lw.txt
 git -C "$life/.worktrees/live-wt" commit -qm live-wt-work
 
-# dirty-wt: finished branch, but unsaved work in its worktree — must survive
+# dirty-wt: redundant branch, but unsaved work in its worktree — must survive
 git -C "$life" worktree add -q "$life/.worktrees/dirty-wt" -b dirty-wt "$branch"
 echo precious > "$life/.worktrees/dirty-wt/precious.txt"
 
@@ -246,7 +246,7 @@ remote_heads="$(git ls-remote --heads "$sandbox/origin.git")"
 assert_not "merged remote branch deleted" quiet grep "refs/heads/merged-plain$" <<<"$remote_heads"
 assert_not "squash-merged remote branch deleted" quiet grep "refs/heads/squashed$" <<<"$remote_heads"
 assert_not "squash-merged worktree remote branch deleted" quiet grep "refs/heads/swt$" <<<"$remote_heads"
-assert "remote branch with unfinished work kept" quiet grep "refs/heads/live$" <<<"$remote_heads"
+assert "remote branch with unmerged work kept" quiet grep "refs/heads/live$" <<<"$remote_heads"
 assert "untracked merged remote branch kept under tracked scope" \
   quiet grep "refs/heads/theirs-merged$" <<<"$remote_heads"
 
@@ -260,7 +260,7 @@ assert "gone-unmerged branch kept" quiet git -C "$life" show-ref --verify refs/h
 assert "gone-unmerged branch reported" quiet grep "keep gone-unmerged (upstream gone)" <<<"$out_life"
 
 assert "squash-merged worktree removed" test ! -e "$life/.worktrees/swt"
-assert "worktree with unfinished work kept" test -d "$life/.worktrees/live-wt"
+assert "worktree with unmerged work kept" test -d "$life/.worktrees/live-wt"
 assert "dirty worktree kept" test -f "$life/.worktrees/dirty-wt/precious.txt"
 assert "dirty worktree reported" quiet grep "skip (worktree .*dirty-wt not clean)" <<<"$out_life"
 assert "branch narration grouped per branch" quiet grep "^  swt:$" <<<"$out_life"
@@ -268,7 +268,7 @@ swt_block="$(grep -A2 '^  swt:$' <<<"$out_life")"
 assert "worktree removal nests under the branch header" quiet grep "removed worktree" <<<"$swt_block"
 assert "branch deletion nests under the branch header" quiet grep "deleted branch" <<<"$swt_block"
 
-assert "main checkout switched off finished branch" \
+assert "main checkout switched off redundant branch" \
   test "$(git -C "$life" symbolic-ref --short HEAD)" = "$branch"
 assert "switch reported" quiet grep "switched .* to $branch" <<<"$out_life"
 assert "default branch ff-pulled after cleanup" \
@@ -284,22 +284,22 @@ assert "tidy exits 0 on second lifecycle pass" test "$life2_status" -eq 0
 remote_heads="$(git ls-remote --heads "$sandbox/origin.git")"
 assert_not "untracked merged remote branch deleted with scope=all" \
   quiet grep "refs/heads/theirs-merged$" <<<"$remote_heads"
-assert "remote branch with unfinished work still kept" quiet grep "refs/heads/live$" <<<"$remote_heads"
+assert "remote branch with unmerged work still kept" quiet grep "refs/heads/live$" <<<"$remote_heads"
 assert "invalid decision value warns" \
   quiet grep "ignoring invalid tidy.local.detachedFolders" <<<"$out_life2"
 
-# --- safety guards around checked-out finished branches ---------------------
+# --- safety guards around checked-out redundant branches ---------------------
 guard="$sandbox/guard"
 git clone -q "$sandbox/origin.git" "$guard" 2>/dev/null
 git -C "$guard" config user.email tidy-test@example.invalid
 git -C "$guard" config user.name tidy-test
 
-# Running from inside a worktree on a finished branch: tidy must not remove
+# Running from inside a worktree on a redundant branch: tidy must not remove
 # the worktree it is standing in.
 git -C "$guard" worktree add -q "$guard/.worktrees/inside" -b inside "$branch"
 inside_status=0
 out_inside="$( (cd "$guard/.worktrees/inside" && run_tidy) 2>&1 )" || inside_status=$?
-assert "tidy exits 0 from inside a finished-branch worktree" test "$inside_status" -eq 0
+assert "tidy exits 0 from inside a redundant-branch worktree" test "$inside_status" -eq 0
 assert "current worktree not removed" test -d "$guard/.worktrees/inside"
 assert "current worktree's branch kept" quiet git -C "$guard" show-ref --verify refs/heads/inside
 assert "current worktree skip reported" \
@@ -307,33 +307,33 @@ assert "current worktree skip reported" \
 assert "default branch held elsewhere reported as the sync blocker" \
   quiet grep "skip sync to $branch (on inside: $branch checked out at" <<<"$out_inside"
 
-# Main checkout on a finished branch with uncommitted tracked changes: the
+# Main checkout on a redundant branch with uncommitted tracked changes: the
 # switch-away is blocked, so the branch survives.
 git -C "$guard" switch -qc parked-dirty --no-track "origin/$branch"
 echo dirt >> "$guard/file.txt"
 dirty_status=0
 out_dirty="$( (cd "$guard" && run_tidy) 2>&1 )" || dirty_status=$?
 assert "tidy exits 0 with dirty main checkout" test "$dirty_status" -eq 0
-assert "dirty checkout's finished branch kept" quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
-assert "still on the dirty finished branch" \
+assert "dirty checkout's redundant branch kept" quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
+assert "still on the dirty redundant branch" \
   test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
 assert "dirty checkout skip reported" \
   quiet grep "skip (checked out at .*tracked files have uncommitted changes)" <<<"$out_dirty"
 
 # Default branch checked out in another worktree: the switch fails, so the
-# finished branch survives with the failure reported.
+# redundant branch survives with the failure reported.
 git -C "$guard" checkout -q -- file.txt
 git -C "$guard" worktree add -q "$guard/.worktrees/wt-main" "$branch"
 swfail_status=0
 out_swfail="$( (cd "$guard" && run_tidy) 2>&1 )" || swfail_status=$?
 assert "tidy exits 0 when switch is blocked" test "$swfail_status" -eq 0
-assert "switch-blocked finished branch kept" quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
+assert "switch-blocked redundant branch kept" quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
 assert "still on the switch-blocked branch" \
   test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
 assert "switch failure reported" \
   quiet grep "skip (cannot switch to $branch" <<<"$out_swfail"
 
-# A branch that conflicts with the default branch is not finished: the
+# A branch that conflicts with the default branch is not redundant: the
 # merge-tree probe must answer "keep", locally and on origin.
 git -C "$guard" switch -qc conflicted --no-track "origin/$branch"
 echo mine > "$guard/sub/inner.txt"
@@ -348,7 +348,7 @@ assert "tidy exits 0 with a conflicting branch" test "$conflict_status" -eq 0
 assert "conflicting local branch kept" quiet git -C "$guard" show-ref --verify refs/heads/conflicted
 assert "conflicting remote branch kept" \
   quiet grep "refs/heads/conflicted$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
-assert_not "finished branch deleted once no longer checked out" \
+assert_not "redundant branch deleted once no longer checked out" \
   quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
 
 # The gone-but-unmerged report is information, not an action: it must
@@ -383,7 +383,7 @@ assert "unsaved work reported under detachedFolders keep" \
 assert_not "saved detached folder not flagged under keep" quiet grep "stale-clean" <<<"$out_dk"
 assert "kept detached folder untouched" test -f "$guard/.worktrees/stale-keep/wip.txt"
 
-# --- tidy.remote.branches keep leaves a genuinely finished remote alone -----
+# --- tidy.remote.branches keep leaves a genuinely redundant remote alone -----
 rk="$sandbox/rk"
 git clone -q "$sandbox/origin.git" "$rk" 2>/dev/null
 git -C "$rk" config user.email tidy-test@example.invalid
@@ -403,8 +403,8 @@ out_rk="$( (cd "$rk" && run_tidy) 2>&1 )" || rk_status=$?
 assert "tidy exits 0 with remote keep" test "$rk_status" -eq 0
 assert "remote keep leaves merged remote branch" \
   quiet grep "refs/heads/rk-merged$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
-assert "kept finished remote branch summarized" \
-  quiet grep "keeping 1 finished remote branch(es) (tidy.remote.branches keep)" <<<"$out_rk"
+assert "kept redundant remote branch summarized" \
+  quiet grep "keeping 1 redundant remote branch(es) (tidy.remote.branches keep)" <<<"$out_rk"
 assert_not "merged local branch still deleted under remote keep" \
   quiet git -C "$rk" show-ref --verify refs/heads/rk-merged
 
@@ -453,7 +453,7 @@ assert "untracked file preserved" test "$(cat "$coll/scratch.txt")" = local-scra
 
 # --- the sync-stage switch proceeds while another worktree exists -----------
 # tidy.local.branches keep matters: without it the fully-merged parked branch
-# counts as finished and the *cleanup* stage does the switch, so the
+# counts as redundant and the *cleanup* stage does the switch, so the
 # sync-gate path would never execute.
 swx="$sandbox/syncwx"
 git clone -q "$sandbox/origin.git" "$swx" 2>/dev/null
@@ -525,7 +525,7 @@ assert "detached HEAD sync skip reported" \
   quiet grep "skip sync to $branch (detached HEAD)" <<<"$out_det"
 assert_not "still detached after tidy" quiet git -C "$det" symbolic-ref -q HEAD
 
-# --- remote-less repo: finished means contained in the local default branch -
+# --- remote-less repo: redundant means contained in the local default branch -
 solo="$sandbox/solo"
 git init -q -b main "$solo"
 git -C "$solo" config user.email tidy-test@example.invalid

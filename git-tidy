@@ -1,85 +1,57 @@
 #!/usr/bin/env bash
-# git-tidy — clean up finished branches and worktrees, and pack objects, in
+# git-tidy — clean up redundant branches and worktrees, and pack objects, in
 # the current repo.
 #
 # Default: non-interactive. Use -i to prompt before each destructive action.
 
 set -euo pipefail
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 print_usage() {
   cat <<'EOF'
+git-tidy — return a repository to a clean baseline: delete branches,
+worktrees, and leftover folders whose work the default branch already
+contains, then sync the checkout to a fresh default branch.
+
 Usage: git tidy [-i|--interactive] [DIR]
 
 Without DIR: tidies the current git repository.
-With DIR:    finds every git repository under DIR and tidies each.
-             Hidden directories under DIR are not searched, leaving
-             vendored checkouts (e.g. .terraform/modules) and tool
-             caches alone.
+With DIR:    tidies every repository under DIR. Hidden directories are
+             not searched, leaving vendored checkouts and tool caches
+             alone.
 
-For each repository:
-  1. git fetch --all --prune
-  2. git worktree prune (drop admin records for missing worktree dirs)
-  3. Remove detached folders under .worktree/ or .worktrees/ that git no
-     longer lists as worktrees
-  4. Delete branches on origin whose work is finished
-  5. Delete local branches — and remove their worktrees — whose work is
-     finished
-  6. If no in-progress work, switch to the default branch and ff-only pull
-  7. git gc
+Each run: git fetch --all --prune and git worktree prune; remove
+detached folders left under .worktree[s]/; delete redundant branches on
+origin (only ones a local branch tracks, by default), then redundant
+local branches and their worktrees; when nothing is in progress, switch
+to the default branch and ff-only pull; git gc.
 
-A branch counts as finished when the default branch already contains its
-work: its tip is reachable from origin/<default-branch> (merged, or no
-commits of its own yet), or merging it there would change nothing (covers
-squash- and rebase-merged branches; needs git >= 2.38). When that merge
-conflicts, content cannot vouch either way; on a github.com origin with
-the gh CLI installed and authenticated, a merged PR whose head matches
-the branch tip exactly also counts as finished. Work the default
-branch does not contain is never destroyed: such branches are left alone —
-including ones whose upstream is gone (e.g. a PR closed unmerged), which
-are reported. Worktrees are only removed when their working tree is clean,
-and detached folders only when every file's content already exists in the
-repo's object database (i.e. was committed or staged at some point).
-Caution: content that was only ever staged (never committed) counts as
-saved, but once the folder is deleted it is recoverable only via
-`git fsck --lost-found`, and only until git prunes unreachable objects.
-
-Step 4 only considers branches on origin that a local branch tracks (set
-tidy.remote.branchScope to widen it), and leaves a branch alone while a
-local branch is still building on it with unfinished work of its own.
-Step 6 only runs when tracked files have no uncommitted changes
-(untracked files never block — switch and pull leave them alone), HEAD
-has no commits not on origin/<default-branch>, and the default branch
-isn't checked out in another worktree. Other worktrees never block the
-sync: neither the switch nor the ff-only pull can disturb them.
-
-Configuration (git config, per repo or --global). Each decision accepts
-delete, keep, or prompt; the default is delete:
-  tidy.remote.branches        finished branches on origin
-  tidy.local.branches         finished local branches
-  tidy.local.worktrees        worktrees checked out on a finished branch
-  tidy.local.detachedFolders  detached folders under .worktree[s]/
-  tidy.remote.branchScope     which origin branches are candidates:
-                              tracked (default) — only branches some
-                              local branch tracks; all — every branch
-  tidy.github.prLookup        auto (default) — when a branch's merge
-                              conflicts, ask gh whether a merged PR
-                              matches its tip exactly; off — never ask
-
-keep suppresses the per-item narration but stays observable: a one-line
-summary notes held-back candidates. Work at risk is always reported,
-whatever the configuration — branches whose upstream vanished with
-unmerged work, and detached folders holding unsaved files.
+A branch is redundant when deleting it loses nothing: every change it
+carries is already on origin/<default-branch> — merged, squash- or
+rebase-merged (detected by content; needs git >= 2.38), or vouched for
+by a merged GitHub PR matching its tip exactly (needs the gh CLI and a
+github.com origin). Everything else is left alone: branches with
+unmerged work (reported when their upstream is gone), worktrees with
+uncommitted changes, and folders holding unsaved files.
 
 Options:
-  -i, --interactive   Prompt y/N before each destructive action (upgrades
-                      configured delete to prompt; keep stays keep).
+  -i, --interactive   Ask y/N before each destructive action.
   -V, --version       Print version and exit.
-      --self-upgrade  Fetch the latest version: a Homebrew-managed
-                      install upgrades via brew upgrade git-tidy; any
-                      other install re-runs the installer.
+      --self-upgrade  Fetch the latest version (brew upgrade for
+                      Homebrew installs; the installer otherwise).
   -h, --help          Show this help.
+
+Configuration (git config, per repo or --global; details in the README):
+  tidy.remote.branches        delete (default) | keep | prompt
+  tidy.remote.branchScope     tracked (default) | all
+  tidy.local.branches         delete (default) | keep | prompt
+  tidy.local.worktrees        delete (default) | keep | prompt
+  tidy.local.detachedFolders  delete (default) | keep | prompt
+  tidy.github.prLookup        auto (default) | off
+
+  e.g.  git config --global tidy.local.worktrees prompt
+        git config --get-regexp '^tidy\.'   # current configuration
 EOF
 }
 
@@ -361,8 +333,8 @@ if (( ${#detached_dirs[@]} > 0 )); then
   fi
 fi
 
-# --- finished-branch detection -----------------------------------------------
-# The ref finished work is measured against: the default branch as origin
+# --- redundant-branch detection -----------------------------------------------
+# The ref redundant work is measured against: the default branch as origin
 # has it, falling back to the local default branch for remote-less repos.
 merge_target=""
 if [[ -n "$default_branch" ]]; then
@@ -422,7 +394,7 @@ github_lookup_available() {
 }
 
 # Does a merged GitHub PR account for ref $1's exact tip? On a match, sets
-# branch_finished_via to a citation and returns 0. Memoized per tip OID —
+# branch_redundant_via to a citation and returns 0. Memoized per tip OID —
 # the same branch gets judged as a remote and as a local candidate.
 github_pr_memo=$'\n'
 github_merged_pr() {
@@ -442,7 +414,7 @@ github_merged_pr() {
     github_pr_memo="$github_pr_memo$oid=$url"$'\n'
   fi
   if [[ -n "$url" ]]; then
-    branch_finished_via="merged as $url"
+    branch_redundant_via="merged as $url"
     return 0
   fi
   return 1
@@ -451,12 +423,12 @@ github_merged_pr() {
 # Does the default branch already contain all work on ref $1? True when the
 # tip is reachable from $merge_target (merged, or never started), or when
 # merging it there would leave $merge_target's tree unchanged (squash- or
-# rebase-merged). A merge conflict alone means "not finished" — unless a
+# rebase-merged). A merge conflict alone means "not redundant" — unless a
 # merged GitHub PR vouches for the exact tip (see above), in which case
-# branch_finished_via carries the citation.
-branch_finished() {
+# branch_redundant_via carries the citation.
+branch_redundant() {
   local ref="$1" merged_tree
-  branch_finished_via=""
+  branch_redundant_via=""
   if git merge-base --is-ancestor "$ref" "$merge_target" 2>/dev/null; then
     return 0
   fi
@@ -468,7 +440,7 @@ branch_finished() {
   [[ "$merged_tree" == "$merge_target_tree" ]]
 }
 
-# --- finished remote branches ------------------------------------------------
+# --- redundant remote branches ------------------------------------------------
 if [[ "$merge_target" == refs/remotes/origin/* ]]; then
   remote_decision="$(decision_for tidy.remote.branches)"
 
@@ -482,8 +454,8 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
       ;;
   esac
 
-  finished_remote=()
-  finished_remote_via=()
+  redundant_remote=()
+  redundant_remote_via=()
   # Scan even under keep — the summary line below keeps the held-back
   # candidates observable.
   # Upstreams of local branches, newline-delimited for a substring test
@@ -497,16 +469,16 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
     if [[ "$remote_scope" == "tracked" && "$tracked_upstreams" != *$'\n'"origin/$name"$'\n'* ]]; then
       continue
     fi
-    if ! branch_finished "$remote_ref"; then
+    if ! branch_redundant "$remote_ref"; then
       continue
     fi
-    via="$branch_finished_via"
+    via="$branch_redundant_via"
     # A local branch still building on the remote branch (tracking it,
-    # with unfinished work of its own) means its lifecycle isn't over —
+    # with unmerged work of its own) means its lifecycle isn't over —
     # leave the remote branch alone.
     in_use=0
     while IFS=$'\t' read -r local_name local_upstream; do
-      if [[ "$local_upstream" == "origin/$name" ]] && ! branch_finished "refs/heads/$local_name"; then
+      if [[ "$local_upstream" == "origin/$name" ]] && ! branch_redundant "refs/heads/$local_name"; then
         in_use=1
         break
       fi
@@ -514,22 +486,22 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
     if (( in_use )); then
       continue
     fi
-    finished_remote+=("$name")
-    finished_remote_via+=("$via")
+    redundant_remote+=("$name")
+    redundant_remote_via+=("$via")
   done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
 
-  if [[ "$remote_decision" == "keep" ]] && (( ${#finished_remote[@]} > 0 )); then
-    echo "==> keeping ${#finished_remote[@]} finished remote branch(es) (tidy.remote.branches keep)"
-  elif (( ${#finished_remote[@]} > 0 )); then
-    echo "==> cleaning ${#finished_remote[@]} finished remote branch(es)"
-    for i in "${!finished_remote[@]}"; do
-      name="${finished_remote[$i]}"
-      via="${finished_remote_via[$i]}"
+  if [[ "$remote_decision" == "keep" ]] && (( ${#redundant_remote[@]} > 0 )); then
+    echo "==> keeping ${#redundant_remote[@]} redundant remote branch(es) (tidy.remote.branches keep)"
+  elif (( ${#redundant_remote[@]} > 0 )); then
+    echo "==> cleaning ${#redundant_remote[@]} redundant remote branch(es)"
+    for i in "${!redundant_remote[@]}"; do
+      name="${redundant_remote[$i]}"
+      via="${redundant_remote_via[$i]}"
       if ! should_act "$remote_decision" "  delete origin/$name?"; then
         echo "  skip origin/$name"
         continue
       fi
-      # Lease-protected delete: branch_finished judged the branch as of
+      # Lease-protected delete: branch_redundant judged the branch as of
       # our fetch, so refuse if origin has moved since — a push that
       # landed in between must not be destroyed.
       if err="$(git push --force-with-lease="refs/heads/$name:$(git rev-parse "refs/remotes/origin/$name")" \
@@ -543,7 +515,7 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
 fi
 
 # Print the worktree path for branch "$1" if any worktree has it checked out.
-# (A linear porcelain scan; called once per finished branch. No associative
+# (A linear porcelain scan; called once per redundant branch. No associative
 # arrays so this stays compatible with bash 3.2.)
 worktree_for() {
   local target="refs/heads/$1" line cand_path=""
@@ -558,7 +530,7 @@ worktree_for() {
 }
 
 # Print the per-branch grouping header ($1) before the branch's first
-# narrated action; finished branches that keep gates silently hold back
+# narrated action; redundant branches that keep gates silently hold back
 # never announce.
 announce_branch() {
   if (( ! branch_announced )); then
@@ -567,21 +539,21 @@ announce_branch() {
   fi
 }
 
-# --- finished local branches and their worktrees -------------------------------
+# --- redundant local branches and their worktrees -------------------------------
 local_decision="$(decision_for tidy.local.branches)"
 worktree_decision="$(decision_for tidy.local.worktrees)"
 
 if [[ -n "$merge_target" ]]; then
-  finished_local=()
-  finished_local_via=()
+  redundant_local=()
+  redundant_local_via=()
   gone_unmerged=()
   while IFS=$'\t' read -r name track; do
     if [[ "$name" == "$default_branch" ]]; then
       continue
     fi
-    if branch_finished "refs/heads/$name"; then
-      finished_local+=("$name")
-      finished_local_via+=("$branch_finished_via")
+    if branch_redundant "refs/heads/$name"; then
+      redundant_local+=("$name")
+      redundant_local_via+=("$branch_redundant_via")
     elif [[ "$track" == "[gone]" ]]; then
       # The upstream was deleted (e.g. a PR closed unmerged) but the work
       # is nowhere else — deleting the branch would destroy it.
@@ -593,20 +565,20 @@ if [[ -n "$merge_target" ]]; then
   # candidates are being held back. The gone-but-unmerged report below
   # always prints — it is information about work at risk, not an action.
   if [[ "$local_decision" == "keep" && "$worktree_decision" == "keep" ]]; then
-    if (( ${#finished_local[@]} > 0 )); then
-      echo "==> keeping ${#finished_local[@]} finished local branch(es) (tidy.local.branches keep)"
+    if (( ${#redundant_local[@]} > 0 )); then
+      echo "==> keeping ${#redundant_local[@]} redundant local branch(es) (tidy.local.branches keep)"
     fi
-  elif (( ${#finished_local[@]} == 0 )); then
-    echo "==> no finished local branches"
+  elif (( ${#redundant_local[@]} == 0 )); then
+    echo "==> no redundant local branches"
   else
-    echo "==> cleaning ${#finished_local[@]} finished local branch(es)"
+    echo "==> cleaning ${#redundant_local[@]} redundant local branch(es)"
     # In mixed configurations one decision can be keep while the other
     # acts; count what the keep gates swallow so the header still adds up.
     kept_branches=0
     kept_worktrees=0
-    for i in "${!finished_local[@]}"; do
-      branch="${finished_local[$i]}"
-      via="${finished_local_via[$i]}"
+    for i in "${!redundant_local[@]}"; do
+      branch="${redundant_local[$i]}"
+      via="${redundant_local_via[$i]}"
       branch_announced=0
       wt="$(worktree_for "$branch")"
       if [[ -n "$wt" ]]; then
