@@ -549,6 +549,92 @@ assert "branch with unique work kept in remote-less repo" \
 assert "sync skip reported without origin" \
   quiet grep "skip sync to main (cannot compare HEAD to origin/main)" <<<"$out_solo"
 
+# --- GitHub PR lookup vouches for conflict-stranded squash-merged branches ---
+ghx="$sandbox/ghx"
+git clone -q "$sandbox/origin.git" "$ghx" 2>/dev/null
+git -C "$ghx" config user.email tidy-test@example.invalid
+git -C "$ghx" config user.name tidy-test
+# The availability gate requires a github.com origin: point the remote URL
+# at github.com and rewrite the actual transport back to the sandbox.
+git -C "$ghx" remote set-url origin https://github.com/tidy-test/sandbox.git
+git -C "$ghx" config url."$sandbox/origin.git".insteadOf https://github.com/tidy-test/sandbox.git
+
+# ghx-squashed: pushed, squash-merged, then its territory rewritten on the
+# default branch — the content probe conflicts, only the PR lookup can vouch
+git -C "$ghx" switch -qc ghx-squashed --no-track "origin/$branch"
+echo first > "$ghx/ghx.txt"
+git -C "$ghx" add ghx.txt
+git -C "$ghx" commit -qm ghx-squashed-work
+git -C "$ghx" push -q -u origin ghx-squashed
+git -C "$dev" fetch -q origin
+quiet git -C "$dev" merge --squash origin/ghx-squashed
+git -C "$dev" commit -qm "ghx-squashed (#77)"
+echo second > "$dev/ghx.txt"
+git -C "$dev" commit -qam ghx-rewrite
+git -C "$dev" push -q origin "HEAD:refs/heads/$branch"
+
+# ghx-live: conflicts the same way but no merged PR — must be kept
+git -C "$ghx" switch -qc ghx-live --no-track "origin/$branch"
+echo mine > "$ghx/ghx.txt"
+git -C "$ghx" add ghx.txt
+git -C "$ghx" commit -qm ghx-live-work
+git -C "$ghx" push -q -u origin ghx-live
+git -C "$ghx" switch -q "$branch"
+
+# Fake gh: auth always succeeds; pr list emulates the post---jq output,
+# answering only for the merged fixture branch when the query embeds its
+# exact tip OID (the real call's --jq expression contains the OID).
+sq_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-squashed)"
+mkdir -p "$sandbox/ghstub"
+cat > "$sandbox/ghstub/gh" <<STUB
+#!/bin/sh
+[ "\$1" = "auth" ] && exit 0
+head=""; oid_seen=0; prev=""
+for a in "\$@"; do
+  [ "\$prev" = "--head" ] && head="\$a"
+  case "\$a" in *$sq_oid*) oid_seen=1 ;; esac
+  prev="\$a"
+done
+if [ "\$head" = "ghx-squashed" ] && [ "\$oid_seen" = 1 ]; then
+  echo "https://github.com/tidy-test/sandbox/pull/77"
+fi
+STUB
+chmod +x "$sandbox/ghstub/gh"
+
+# Lookup off: the conflicted branch stays unjudged and kept.
+git -C "$ghx" config tidy.github.prLookup off
+ghx_off_status=0
+quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_off_status=$?
+assert "tidy exits 0 with prLookup off" test "$ghx_off_status" -eq 0
+assert "conflicted branch kept with prLookup off" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
+
+# Unauthenticated gh: the gate closes silently and the branch is kept.
+git -C "$ghx" config --unset tidy.github.prLookup
+mkdir -p "$sandbox/ghstub-noauth"
+printf '#!/bin/sh\nexit 1\n' > "$sandbox/ghstub-noauth/gh"
+chmod +x "$sandbox/ghstub-noauth/gh"
+ghx_noauth_status=0
+quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub-noauth':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_noauth_status=$?
+assert "tidy exits 0 with unauthenticated gh" test "$ghx_noauth_status" -eq 0
+assert "conflicted branch kept when gh auth fails" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
+
+# Lookup on (default auto): the merged PR vouches; the impostor stays.
+ghx_status=0
+out_ghx="$( (cd "$ghx" && PATH="$sandbox/ghstub:$PATH" run_tidy) 2>&1 )" || ghx_status=$?
+assert "tidy exits 0 with PR lookup" test "$ghx_status" -eq 0
+assert "conflicted merged remote branch deleted with citation" \
+  quiet grep "deleted origin/ghx-squashed (merged as https://github.com/tidy-test/sandbox/pull/77)" <<<"$out_ghx"
+assert "conflicted merged local branch deleted with citation" \
+  quiet grep "deleted branch (merged as https://github.com/tidy-test/sandbox/pull/77)" <<<"$out_ghx"
+assert_not "merged remote branch gone from origin" \
+  quiet grep "refs/heads/ghx-squashed$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert "conflicted unmerged remote branch kept" \
+  quiet grep "refs/heads/ghx-live$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert "conflicted unmerged local branch kept" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-live
+
 # --- --self-upgrade routes a Homebrew-managed install through brew ----------
 cellar_bin="$sandbox/homebrew/Cellar/git-tidy/9.9.9/bin"
 mkdir -p "$cellar_bin" "$sandbox/homebrew/bin" "$sandbox/stubbin"
