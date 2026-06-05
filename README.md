@@ -1,6 +1,6 @@
 # git-tidy
 
-A `git` subcommand that cleans up a repository: prunes stale worktrees, removes detached worktree folders left under `.worktree/` or `.worktrees/`, deletes branches whose upstream is gone, fast-forwards the default branch, and runs `git gc`.
+A `git` subcommand that cleans up a repository: deletes remote and local branches whose work is finished, removes their worktrees, cleans up detached worktree folders left under `.worktree/` or `.worktrees/`, fast-forwards the default branch, and runs `git gc`.
 
 ```
 $ git tidy
@@ -8,16 +8,43 @@ $ git tidy
 ==> git worktree prune
 ==> cleaning 1 detached worktree folder(s)
   removed /path/to/repo/.worktrees/abandoned-spike
-==> cleaning 3 stale branch(es)
+==> cleaning 2 finished remote branch(es)
+  deleted origin/old-feature
+  deleted origin/squashed-feature
+==> cleaning 2 finished local branch(es)
   removed worktree .worktrees/old-feature
   deleted branch old-feature
-  ...
+  switched /path/to/repo to main
+  deleted branch squashed-feature
 ==> git pull --ff-only
 ==> git gc
 ==> done
 ```
 
+A branch counts as **finished** when the default branch already contains its work — merged, squash- or rebase-merged (detected by content, no forge API needed; requires git ≥ 2.38), or never started (no commits of its own). Work that isn't safely somewhere else is never destroyed: branches with unmerged commits are left alone (even when their upstream is gone — e.g. a PR closed unmerged — those are reported), worktrees are only removed when clean, and detached folders only when every file's content is already in git's object database.
+
 Run with `-i` for an interactive prompt before each destructive action, or pass a directory to tidy every repo found beneath it.
+
+## Configuration
+
+Each cleanup decision is configurable via `git config` (per repo, or `--global` for your default workflow). Every decision accepts `delete`, `keep` (leave as-is — no per-item narration, just a one-line summary when candidates are being held back), or `prompt`; the default is `delete`. Work at risk is always reported regardless of configuration: branches whose upstream vanished with unmerged work, and detached folders holding unsaved files.
+
+| Key | Decides what happens to |
+|-----|------------------------|
+| `tidy.remote.branches` | finished branches on origin |
+| `tidy.local.branches` | finished local branches |
+| `tidy.local.worktrees` | worktrees checked out on a finished branch |
+| `tidy.local.detachedFolders` | detached folders under `.worktree[s]/` |
+
+`tidy.remote.branchScope` controls which origin branches are candidates: `tracked` (default) considers only branches some local branch tracks — i.e. yours — while `all` considers every branch on origin (for repos where you want one tidy run to sweep everything). Either way, a remote branch is left alone while a local branch is still building on it with unfinished work of its own, and deletion is lease-protected: if origin moved after git-tidy's fetch, the delete is refused rather than destroying the newer push.
+
+```sh
+# Example: never touch origin, ask before removing worktrees
+git config --global tidy.remote.branches keep
+git config --global tidy.local.worktrees prompt
+```
+
+`-i` upgrades every configured `delete` to `prompt` for that run; `keep` stays `keep`.
 
 ## Install
 
