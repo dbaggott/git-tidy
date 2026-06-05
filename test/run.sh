@@ -658,10 +658,25 @@ echo v2 > "$tap_seed/formula.rb"
 git -C "$tap_seed" commit -qam v2
 git -C "$tap_seed" push -q origin HEAD:main
 
+# The info JSON mirrors real brew's pretty-printed, multi-line shape —
+# a compact stub would mask line-oriented parsing bugs (it did once).
 cat > "$sandbox/stubbin/brew" <<STUB
 #!/bin/sh
 case "\$1" in
-  info) echo '{"formulae":[{"name":"git-tidy","tap":"tidy-test/tap"}],"casks":[]}' ;;
+  info) cat <<'JSON'
+{
+  "formulae": [
+    {
+      "name": "git-tidy",
+      "full_name": "tidy-test/tap/git-tidy",
+      "tap": "tidy-test/tap",
+      "desc": "Tidy up git repositories"
+    }
+  ],
+  "casks": []
+}
+JSON
+    ;;
   --repository) echo "$sandbox/tap-repo" ;;
   *) echo "brew-stub: \$*" ;;
 esac

@@ -114,16 +114,19 @@ while [[ $# -gt 0 ]]; do
       fi
       if [[ "$self" == */Cellar/git-tidy/* ]]; then
         if command -v brew >/dev/null 2>&1; then
-          echo "git-tidy: Homebrew install detected; refreshing the tap..."
+          echo "git-tidy: Homebrew install detected"
           # brew upgrade consults the tap's local clone, and brew's
           # auto-update is throttled — a release published minutes ago
           # is invisible until something refreshes the tap. Pull just
           # the owning tap; best-effort, so an offline upgrade still
-          # does whatever cached state allows.
+          # does whatever cached state allows. The grep tolerates both
+          # of brew's JSON shapes: pretty-printed ("tap": "x/y") from
+          # real brew, compact from --json consumers.
           tap="$(brew info --json=v2 git-tidy 2>/dev/null \
-                   | grep -o '"tap":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+                   | grep -o '"tap": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
           if [[ -n "$tap" ]] && tap_repo="$(brew --repository "$tap" 2>/dev/null)" \
              && [[ -d "$tap_repo" ]]; then
+            echo "git-tidy: refreshing $tap..."
             git -C "$tap_repo" pull --ff-only --quiet 2>/dev/null || true
           fi
           echo "git-tidy: running brew upgrade git-tidy..."
