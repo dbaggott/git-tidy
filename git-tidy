@@ -51,7 +51,7 @@ Configuration (git config, per repo or --global; details in the README):
   tidy.github.prLookup        auto (default) | off
 
   e.g.  git config --global tidy.local.worktrees prompt
-        git config --get-regexp '^tidy\.'   # everything in effect
+        git config --get-regexp '^tidy\.'   # current configuration
 EOF
 }
 
