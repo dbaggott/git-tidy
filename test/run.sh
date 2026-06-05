@@ -549,6 +549,24 @@ assert "branch with unique work kept in remote-less repo" \
 assert "sync skip reported without origin" \
   quiet grep "skip sync to main (cannot compare HEAD to origin/main)" <<<"$out_solo"
 
+# --- --self-upgrade routes a Homebrew-managed install through brew ----------
+cellar_bin="$sandbox/homebrew/Cellar/git-tidy/9.9.9/bin"
+mkdir -p "$cellar_bin" "$sandbox/homebrew/bin" "$sandbox/stubbin"
+cp "$tidy_dir/git-tidy" "$cellar_bin/git-tidy"
+chmod +x "$cellar_bin/git-tidy"
+ln -s "../Cellar/git-tidy/9.9.9/bin/git-tidy" "$sandbox/homebrew/bin/git-tidy"
+cat > "$sandbox/stubbin/brew" <<'STUB'
+#!/bin/sh
+echo "brew-stub: $*"
+STUB
+chmod +x "$sandbox/stubbin/brew"
+bu_status=0
+out_bu="$(PATH="$sandbox/stubbin:$PATH" "$TIDY_BASH" "$sandbox/homebrew/bin/git-tidy" --self-upgrade 2>&1)" || bu_status=$?
+assert "--self-upgrade exits 0 for a brew install" test "$bu_status" -eq 0
+assert "brew install detected" quiet grep "Homebrew install detected" <<<"$out_bu"
+assert "upgrade routed through brew" quiet grep "brew-stub: upgrade git-tidy" <<<"$out_bu"
+assert_not "curl installer not run for a brew install" quiet grep "fetching latest installer" <<<"$out_bu"
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1
