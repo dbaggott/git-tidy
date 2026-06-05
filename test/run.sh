@@ -641,9 +641,30 @@ mkdir -p "$cellar_bin" "$sandbox/homebrew/bin" "$sandbox/stubbin"
 cp "$tidy_dir/git-tidy" "$cellar_bin/git-tidy"
 chmod +x "$cellar_bin/git-tidy"
 ln -s "../Cellar/git-tidy/9.9.9/bin/git-tidy" "$sandbox/homebrew/bin/git-tidy"
-cat > "$sandbox/stubbin/brew" <<'STUB'
+# A tap clone one commit behind its origin: --self-upgrade must pull it
+# before upgrading, or a release published after brew's last auto-update
+# is invisible.
+git init -q --bare "$sandbox/tap-origin.git"
+tap_seed="$sandbox/tap-seed"
+git clone -q "$sandbox/tap-origin.git" "$tap_seed" 2>/dev/null
+git -C "$tap_seed" config user.email tidy-test@example.invalid
+git -C "$tap_seed" config user.name tidy-test
+echo v1 > "$tap_seed/formula.rb"
+git -C "$tap_seed" add formula.rb
+git -C "$tap_seed" commit -qm v1
+git -C "$tap_seed" push -q origin HEAD:main
+git clone -q "$sandbox/tap-origin.git" "$sandbox/tap-repo" 2>/dev/null
+echo v2 > "$tap_seed/formula.rb"
+git -C "$tap_seed" commit -qam v2
+git -C "$tap_seed" push -q origin HEAD:main
+
+cat > "$sandbox/stubbin/brew" <<STUB
 #!/bin/sh
-echo "brew-stub: $*"
+case "\$1" in
+  info) echo '{"formulae":[{"name":"git-tidy","tap":"tidy-test/tap"}],"casks":[]}' ;;
+  --repository) echo "$sandbox/tap-repo" ;;
+  *) echo "brew-stub: \$*" ;;
+esac
 STUB
 chmod +x "$sandbox/stubbin/brew"
 bu_status=0
@@ -652,6 +673,8 @@ assert "--self-upgrade exits 0 for a brew install" test "$bu_status" -eq 0
 assert "brew install detected" quiet grep "Homebrew install detected" <<<"$out_bu"
 assert "upgrade routed through brew" quiet grep "brew-stub: upgrade git-tidy" <<<"$out_bu"
 assert_not "curl installer not run for a brew install" quiet grep "fetching latest installer" <<<"$out_bu"
+assert "tap refreshed before upgrade" \
+  test "$(git -C "$sandbox/tap-repo" rev-parse HEAD)" = "$(git -C "$sandbox/tap-origin.git" rev-parse HEAD)"
 
 # brew's opt/ path symlinks the directory, not the file — must still detect
 mkdir -p "$sandbox/homebrew/opt"
