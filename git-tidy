@@ -59,6 +59,11 @@ delete, keep, or prompt; the default is delete:
                               tracked (default) — only branches some
                               local branch tracks; all — every branch
 
+keep suppresses the per-item narration but stays observable: a one-line
+summary notes held-back candidates. Work at risk is always reported,
+whatever the configuration — branches whose upstream vanished with
+unmerged work, and detached folders holding unsaved files.
+
 Options:
   -i, --interactive   Prompt y/N before each destructive action (upgrades
                       configured delete to prompt; keep stays keep).
@@ -236,7 +241,7 @@ first_unsaved_file() {
 detached_decision="$(decision_for tidy.local.detachedFolders)"
 
 detached_dirs=()
-if [[ "$detached_decision" != "keep" && -n "$main_repo_dir" ]]; then
+if [[ -n "$main_repo_dir" ]]; then
   registered_worktrees=()
   while IFS= read -r line; do
     if [[ "$line" == "worktree "* ]]; then
@@ -265,27 +270,42 @@ if [[ "$detached_decision" != "keep" && -n "$main_repo_dir" ]]; then
 fi
 
 if (( ${#detached_dirs[@]} > 0 )); then
-  echo "==> cleaning ${#detached_dirs[@]} detached worktree folder(s)"
-  for dir in "${detached_dirs[@]}"; do
-    unsaved="$(first_unsaved_file "$dir")"
-    if [[ "$unsaved" == "$dir" ]]; then
-      echo "  skip $dir (not fully readable)"
-      continue
-    fi
-    if [[ -n "$unsaved" ]]; then
-      echo "  skip $dir (unsaved work, e.g. ${unsaved#"$dir"/})"
-      continue
-    fi
-    if ! should_act "$detached_decision" "  remove detached folder $dir?"; then
-      echo "  skip $dir"
-      continue
-    fi
-    if err="$(rm -rf -- "$dir" 2>&1)"; then
-      echo "  removed $dir"
-    else
-      echo "  skip $dir (rm failed: $err)"
-    fi
-  done
+  if [[ "$detached_decision" == "keep" ]]; then
+    # keep is observable but quiet: one summary line — plus reports for
+    # folders holding unsaved work, which are invisible to git and easy
+    # to lose, so they are flagged whatever the configuration.
+    echo "==> keeping ${#detached_dirs[@]} detached worktree folder(s) (tidy.local.detachedFolders keep)"
+    for dir in "${detached_dirs[@]}"; do
+      unsaved="$(first_unsaved_file "$dir")"
+      if [[ "$unsaved" == "$dir" ]]; then
+        echo "  keep $dir (not fully readable)"
+      elif [[ -n "$unsaved" ]]; then
+        echo "  keep $dir (unsaved work, e.g. ${unsaved#"$dir"/})"
+      fi
+    done
+  else
+    echo "==> cleaning ${#detached_dirs[@]} detached worktree folder(s)"
+    for dir in "${detached_dirs[@]}"; do
+      unsaved="$(first_unsaved_file "$dir")"
+      if [[ "$unsaved" == "$dir" ]]; then
+        echo "  skip $dir (not fully readable)"
+        continue
+      fi
+      if [[ -n "$unsaved" ]]; then
+        echo "  skip $dir (unsaved work, e.g. ${unsaved#"$dir"/})"
+        continue
+      fi
+      if ! should_act "$detached_decision" "  remove detached folder $dir?"; then
+        echo "  skip $dir"
+        continue
+      fi
+      if err="$(rm -rf -- "$dir" 2>&1)"; then
+        echo "  removed $dir"
+      else
+        echo "  skip $dir (rm failed: $err)"
+      fi
+    done
+  fi
 fi
 
 # --- finished-branch detection -----------------------------------------------
@@ -343,39 +363,41 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
   esac
 
   finished_remote=()
-  if [[ "$remote_decision" != "keep" ]]; then
-    # Upstreams of local branches, newline-delimited for a substring test
-    # (no associative arrays so this stays compatible with bash 3.2).
-    tracked_upstreams=$'\n'"$(git for-each-ref --format='%(upstream:short)' refs/heads)"$'\n'
-    while IFS= read -r remote_ref; do
-      name="${remote_ref#refs/remotes/origin/}"
-      if [[ "$name" == "HEAD" || "$name" == "$default_branch" ]]; then
-        continue
+  # Scan even under keep — the summary line below keeps the held-back
+  # candidates observable.
+  # Upstreams of local branches, newline-delimited for a substring test
+  # (no associative arrays so this stays compatible with bash 3.2).
+  tracked_upstreams=$'\n'"$(git for-each-ref --format='%(upstream:short)' refs/heads)"$'\n'
+  while IFS= read -r remote_ref; do
+    name="${remote_ref#refs/remotes/origin/}"
+    if [[ "$name" == "HEAD" || "$name" == "$default_branch" ]]; then
+      continue
+    fi
+    if [[ "$remote_scope" == "tracked" && "$tracked_upstreams" != *$'\n'"origin/$name"$'\n'* ]]; then
+      continue
+    fi
+    if ! branch_finished "$remote_ref"; then
+      continue
+    fi
+    # A local branch still building on the remote branch (tracking it,
+    # with unfinished work of its own) means its lifecycle isn't over —
+    # leave the remote branch alone.
+    in_use=0
+    while IFS=$'\t' read -r local_name local_upstream; do
+      if [[ "$local_upstream" == "origin/$name" ]] && ! branch_finished "refs/heads/$local_name"; then
+        in_use=1
+        break
       fi
-      if [[ "$remote_scope" == "tracked" && "$tracked_upstreams" != *$'\n'"origin/$name"$'\n'* ]]; then
-        continue
-      fi
-      if ! branch_finished "$remote_ref"; then
-        continue
-      fi
-      # A local branch still building on the remote branch (tracking it,
-      # with unfinished work of its own) means its lifecycle isn't over —
-      # leave the remote branch alone.
-      in_use=0
-      while IFS=$'\t' read -r local_name local_upstream; do
-        if [[ "$local_upstream" == "origin/$name" ]] && ! branch_finished "refs/heads/$local_name"; then
-          in_use=1
-          break
-        fi
-      done < <(git for-each-ref --format='%(refname:short)%09%(upstream:short)' refs/heads)
-      if (( in_use )); then
-        continue
-      fi
-      finished_remote+=("$name")
-    done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
-  fi
+    done < <(git for-each-ref --format='%(refname:short)%09%(upstream:short)' refs/heads)
+    if (( in_use )); then
+      continue
+    fi
+    finished_remote+=("$name")
+  done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
 
-  if (( ${#finished_remote[@]} > 0 )); then
+  if [[ "$remote_decision" == "keep" ]] && (( ${#finished_remote[@]} > 0 )); then
+    echo "==> keeping ${#finished_remote[@]} finished remote branch(es) (tidy.remote.branches keep)"
+  elif (( ${#finished_remote[@]} > 0 )); then
     echo "==> cleaning ${#finished_remote[@]} finished remote branch(es)"
     for name in "${finished_remote[@]}"; do
       if ! should_act "$remote_decision" "  delete origin/$name?"; then
@@ -430,11 +452,13 @@ if [[ -n "$merge_target" ]]; then
     fi
   done < <(git for-each-ref --format='%(refname:short)%09%(upstream:track)' refs/heads)
 
-  # keep is leave-as-is, quietly: with both decisions keep, skip the action
-  # narration. The gone-but-unmerged report below still prints — it is
-  # information about work at risk, not an action.
+  # keep is leave-as-is without per-item narration: one summary line when
+  # candidates are being held back. The gone-but-unmerged report below
+  # always prints — it is information about work at risk, not an action.
   if [[ "$local_decision" == "keep" && "$worktree_decision" == "keep" ]]; then
-    :
+    if (( ${#finished_local[@]} > 0 )); then
+      echo "==> keeping ${#finished_local[@]} finished local branch(es) (tidy.local.branches keep)"
+    fi
   elif (( ${#finished_local[@]} == 0 )); then
     echo "==> no finished local branches"
   else

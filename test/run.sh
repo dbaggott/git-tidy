@@ -94,6 +94,8 @@ assert "folder containing a nested registered worktree untouched" \
 assert "keep config leaves finished branch alone" \
   git -C "$repo" show-ref --verify --quiet refs/heads/wt-clean
 assert_not "keep config is quiet about kept branches" quiet grep "skip branch" <<<"$out"
+assert "kept finished branches summarized" \
+  quiet grep "keeping 4 finished local branch(es) (tidy.local.branches keep)" <<<"$out"
 if [[ "$(id -u)" != 0 ]]; then  # root can read through chmod 000
   assert "unreadable folder kept" test -d "$repo/.worktrees/locked"
   assert "unreadable folder reported" quiet grep "skip .*locked (not fully readable)" <<<"$out"
@@ -359,6 +361,22 @@ assert "tidy exits 0 under all-keep config" test "$gk_status" -eq 0
 assert "gone-unmerged still reported under all-keep config" \
   quiet grep "keep gu-keep (upstream gone)" <<<"$out_gk"
 
+# keep stays observable for detached folders too: a summary line, and
+# unsaved work is reported whatever the configuration.
+git -C "$guard" config tidy.local.detachedFolders keep
+mkdir -p "$guard/.worktrees/stale-keep"
+echo unsaved-thing > "$guard/.worktrees/stale-keep/wip.txt"
+mkdir "$guard/.worktrees/stale-clean"
+dk_status=0
+out_dk="$( (cd "$guard" && run_tidy) 2>&1 )" || dk_status=$?
+assert "tidy exits 0 with detachedFolders keep" test "$dk_status" -eq 0
+assert "kept detached folders summarized" \
+  quiet grep "keeping 2 detached worktree folder(s) (tidy.local.detachedFolders keep)" <<<"$out_dk"
+assert "unsaved work reported under detachedFolders keep" \
+  quiet grep "keep .*stale-keep (unsaved work, e.g. wip.txt)" <<<"$out_dk"
+assert_not "saved detached folder not flagged under keep" quiet grep "stale-clean" <<<"$out_dk"
+assert "kept detached folder untouched" test -f "$guard/.worktrees/stale-keep/wip.txt"
+
 # --- tidy.remote.branches keep leaves a genuinely finished remote alone -----
 rk="$sandbox/rk"
 git clone -q "$sandbox/origin.git" "$rk" 2>/dev/null
@@ -375,10 +393,12 @@ quiet git -C "$dev" merge --no-ff -m merge-rk origin/rk-merged
 git -C "$dev" push -q origin "HEAD:refs/heads/$branch"
 git -C "$rk" switch -q "$branch"
 rk_status=0
-quiet sh -c "cd '$rk' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || rk_status=$?
+out_rk="$( (cd "$rk" && run_tidy) 2>&1 )" || rk_status=$?
 assert "tidy exits 0 with remote keep" test "$rk_status" -eq 0
 assert "remote keep leaves merged remote branch" \
   quiet grep "refs/heads/rk-merged$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert "kept finished remote branch summarized" \
+  quiet grep "keeping 1 finished remote branch(es) (tidy.remote.branches keep)" <<<"$out_rk"
 assert_not "merged local branch still deleted under remote keep" \
   quiet git -C "$rk" show-ref --verify refs/heads/rk-merged
 

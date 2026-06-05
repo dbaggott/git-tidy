@@ -27,7 +27,7 @@ Run with `-i` for an interactive prompt before each destructive action, or pass 
 
 ## Configuration
 
-Each cleanup decision is configurable via `git config` (per repo, or `--global` for your default workflow). Every decision accepts `delete`, `keep` (leave as-is, quietly), or `prompt`; the default is `delete`.
+Each cleanup decision is configurable via `git config` (per repo, or `--global` for your default workflow). Every decision accepts `delete`, `keep` (leave as-is — no per-item narration, just a one-line summary when candidates are being held back), or `prompt`; the default is `delete`. Work at risk is always reported regardless of configuration: branches whose upstream vanished with unmerged work, and detached folders holding unsaved files.
 
 | Key | Decides what happens to |
 |-----|------------------------|
