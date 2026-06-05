@@ -610,16 +610,7 @@ assert "conflicted branch kept with prLookup off" \
   quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
 git -C "$ghx" config --unset tidy.prLookup
 
-# The key's pre-1.3.0 name is still honored.
-git -C "$ghx" config tidy.github.prLookup off
-ghx_legacy_status=0
-quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_legacy_status=$?
-assert "tidy exits 0 with the legacy prLookup key" test "$ghx_legacy_status" -eq 0
-assert "legacy key still disables the lookup" \
-  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
-
 # Unauthenticated gh: the gate closes silently and the branch is kept.
-git -C "$ghx" config --unset tidy.github.prLookup
 mkdir -p "$sandbox/ghstub-noauth"
 printf '#!/bin/sh\nexit 1\n' > "$sandbox/ghstub-noauth/gh"
 chmod +x "$sandbox/ghstub-noauth/gh"

@@ -448,10 +448,6 @@ github_lookup_available() {
     fi
     local setting origin_url
     setting="$(git config --get tidy.prLookup 2>/dev/null || true)"
-    if [[ -z "$setting" ]]; then
-      # The key's pre-1.3.0 name; honored, not documented.
-      setting="$(git config --get tidy.github.prLookup 2>/dev/null || true)"
-    fi
     case "$setting" in
       ""|auto) setting="auto" ;;
       off) ;;
