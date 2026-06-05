@@ -723,6 +723,7 @@ git clone -q "$sandbox/origin.git" "$dr" 2>/dev/null
 git -C "$dr" config user.email tidy-test@example.invalid
 git -C "$dr" config user.name tidy-test
 git -C "$dr" remote add dead /nonexistent-remote-path
+git -C "$dr" remote set-head origin -d
 git -C "$dr" branch -q dr-stale
 dr_status=0
 out_dr="$( (cd "$dr" && run_tidy) 2>&1 )" || dr_status=$?
@@ -732,6 +733,10 @@ assert "fetch failure reported and survived" \
 assert_not "cleanup still ran after the failed fetch" \
   quiet git -C "$dr" show-ref --verify refs/heads/dr-stale
 assert "run completed after the failed fetch" quiet grep "==> done" <<<"$out_dr"
+# (Outcome only: on git >= 2.45 the retry fetch itself repairs the ref,
+# so the explicit-repair narration is version-dependent.)
+assert "origin/HEAD repaired via the origin-only retry" \
+  quiet git -C "$dr" symbolic-ref refs/remotes/origin/HEAD
 
 # --- missing origin/HEAD is repaired so non-main defaults still resolve -----
 trunk_seed="$sandbox/trunk-seed"
@@ -762,13 +767,15 @@ wd="$sandbox/wdirs"
 git clone -q "$sandbox/origin.git" "$wd" 2>/dev/null
 git -C "$wd" config user.email tidy-test@example.invalid
 git -C "$wd" config user.name tidy-test
-git -C "$wd" config tidy.local.worktreeDirs ".wt:$sandbox/abswt"
-mkdir -p "$wd/.wt/stale" "$wd/.wt/precious" "$wd/.worktrees/not-scanned" "$sandbox/abswt/old"
+git -C "$wd" config tidy.local.worktreeDirs ".wt:$sandbox/abswt:~/wt-home"
+mkdir -p "$wd/.wt/stale" "$wd/.wt/precious" "$wd/.worktrees/not-scanned" \
+  "$sandbox/abswt/old" "$sandbox/home/wt-home/tilde-stale"
 echo hello > "$wd/.wt/stale/copy.txt"            # content already in the odb
 echo "one of a kind" > "$wd/.wt/precious/wip.txt"
 echo hello > "$wd/.worktrees/not-scanned/copy.txt"
+echo hello > "$sandbox/home/wt-home/tilde-stale/copy.txt"
 wd_status=0
-out_wd="$( (cd "$wd" && run_tidy) 2>&1 )" || wd_status=$?
+out_wd="$( (cd "$wd" && HOME="$sandbox/home" run_tidy) 2>&1 )" || wd_status=$?
 assert "tidy exits 0 with custom worktree dirs" test "$wd_status" -eq 0
 assert "saved folder removed from a relative custom dir" test ! -e "$wd/.wt/stale"
 assert "unsaved folder kept in a custom dir" test -f "$wd/.wt/precious/wip.txt"
@@ -776,6 +783,7 @@ assert "unsaved folder reported in a custom dir" \
   quiet grep "skip .*precious (unsaved work, e.g. wip.txt)" <<<"$out_wd"
 assert "saved folder removed from an absolute custom dir" test ! -e "$sandbox/abswt/old"
 assert "default dir not scanned once overridden" test -d "$wd/.worktrees/not-scanned"
+assert "tilde entry resolves against HOME" test ! -e "$sandbox/home/wt-home/tilde-stale"
 
 # Non-hidden worktrees/ is in the default scan, but tracked content there
 # is part of the project — committed (hence odb-"saved") files must not

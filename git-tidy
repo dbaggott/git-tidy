@@ -200,21 +200,36 @@ echo "==> git fetch --all --prune"
 # A failed fetch (offline, a dead remote among several) must not abort
 # the run: tidying against the last-fetched state is safe. Staleness
 # only under-detects redundancy — work contained in an old tip is still
-# contained in every newer one — and remote deletion is lease-protected
-# against the stale OID, so a branch that moved since rejects.
+# contained in every newer one, as long as the default branch moves
+# forward (a force-push after the last fetch reopens the ordinary
+# fetch-to-judge race; the commits stay recoverable from the odb until
+# gc expiry) — and remote deletion is lease-protected against the stale
+# OID, so a branch that moved since rejects.
 fetch_ok=1
 if ! git fetch --all --prune; then
   fetch_ok=0
   echo "  fetch failed (continuing with the already-fetched state)"
 fi
 
+# fetch --all fails when ANY remote fails; origin itself may be fine,
+# and everything below that needs freshness needs only origin.
+origin_ok="$fetch_ok"
+if (( ! fetch_ok )) && git config --get remote.origin.url >/dev/null 2>&1; then
+  if git fetch origin --prune >/dev/null 2>&1; then
+    origin_ok=1
+  fi
+fi
+
 # Old clones often lack refs/remotes/origin/HEAD, and the local-branch
 # fallback below only guesses main/master — a repo whose default branch
 # is named anything else silently loses most of tidy. Repair the ref
-# while the remote is known reachable.
-if (( fetch_ok )) && git config --get remote.origin.url >/dev/null 2>&1 \
+# while origin is known reachable. (git >= 2.45 fetch maintains the ref
+# itself, making this a no-op there; this covers older git.)
+if (( origin_ok )) && git config --get remote.origin.url >/dev/null 2>&1 \
    && ! git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
-  git remote set-head origin -a >/dev/null 2>&1 || true
+  if git remote set-head origin -a >/dev/null 2>&1; then
+    echo "  repaired origin/HEAD (was unset)"
+  fi
 fi
 
 default_branch=""
@@ -304,6 +319,13 @@ if [[ -n "$main_repo_dir" ]]; then
   IFS=':' read -r -a worktree_bases <<<"$worktree_dirs"
   for base in ${worktree_bases[@]+"${worktree_bases[@]}"}; do
     [[ -n "$base" ]] || continue
+    # git config returns ~ literally; honor it rather than silently
+    # resolving it as a relative path. (The quoted tilde is deliberate:
+    # we are matching the literal character.)
+    # shellcheck disable=SC2088
+    if [[ "$base" == "~" || "$base" == "~/"* ]]; then
+      base="$HOME${base#\~}"
+    fi
     if [[ "$base" != /* ]]; then
       base="$main_repo_dir/$base"
     fi
@@ -327,7 +349,7 @@ if [[ -n "$main_repo_dir" ]]; then
       # A folder holding tracked files is part of the project, not a
       # worktree leftover — its content being in the odb (it is
       # committed) must not make it a candidate.
-      if [[ -n "$(git -C "$main_repo_dir" ls-files -- "$canon" 2>/dev/null | head -1)" ]]; then
+      if [[ -n "$(git -C "$main_repo_dir" ls-files -- ":(literal)$canon" 2>/dev/null | head -1)" ]]; then
         continue
       fi
       detached_dirs+=("$dir")
