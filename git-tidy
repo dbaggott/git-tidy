@@ -647,7 +647,13 @@ if [[ -n "$default_branch" ]]; then
   fi
 
   if [[ -n "$in_progress_reason" ]]; then
-    echo "==> skip sync to $default_branch ($in_progress_reason)"
+    # Name the parked branch: "HEAD has commits..." without saying where
+    # HEAD is sends the user off to find out.
+    if [[ -n "$current_branch" && "$current_branch" != "$default_branch" ]]; then
+      echo "==> skip sync to $default_branch (on $current_branch: $in_progress_reason)"
+    else
+      echo "==> skip sync to $default_branch ($in_progress_reason)"
+    fi
   else
     # Both steps can fail in normal use now that untracked files don't
     # gate sync (e.g. an untracked file an incoming tracked one would
