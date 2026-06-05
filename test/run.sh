@@ -601,16 +601,7 @@ fi
 STUB
 chmod +x "$sandbox/ghstub/gh"
 
-# Lookup off: the conflicted branch stays unjudged and kept.
-git -C "$ghx" config tidy.github.prLookup off
-ghx_off_status=0
-quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_off_status=$?
-assert "tidy exits 0 with prLookup off" test "$ghx_off_status" -eq 0
-assert "conflicted branch kept with prLookup off" \
-  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
-
 # Unauthenticated gh: the gate closes silently and the branch is kept.
-git -C "$ghx" config --unset tidy.github.prLookup
 mkdir -p "$sandbox/ghstub-noauth"
 printf '#!/bin/sh\nexit 1\n' > "$sandbox/ghstub-noauth/gh"
 chmod +x "$sandbox/ghstub-noauth/gh"
@@ -707,6 +698,136 @@ out_nobrew="$(PATH=/usr/bin:/bin "$sys_bash" "$cellar_bin/git-tidy" --self-upgra
 assert "--self-upgrade exits 1 without brew on PATH" test "$nobrew_status" -eq 1
 assert "missing brew explained" quiet grep "upgrade with: brew upgrade git-tidy" <<<"$out_nobrew"
 assert_not "curl installer not run without brew" quiet grep "fetching latest installer" <<<"$out_nobrew"
+
+# --- a dead remote must not abort the run --------------------------------
+dr="$sandbox/deadremote"
+git clone -q "$sandbox/origin.git" "$dr" 2>/dev/null
+git -C "$dr" config user.email tidy-test@example.invalid
+git -C "$dr" config user.name tidy-test
+git -C "$dr" remote add dead /nonexistent-remote-path
+git -C "$dr" remote set-head origin -d
+git -C "$dr" branch -q dr-stale
+dr_status=0
+out_dr="$( (cd "$dr" && run_tidy) 2>&1 )" || dr_status=$?
+assert "tidy exits 0 despite a dead remote" test "$dr_status" -eq 0
+assert "fetch failure reported and survived" \
+  quiet grep "fetch failed (continuing with the already-fetched state)" <<<"$out_dr"
+assert_not "cleanup still ran after the failed fetch" \
+  quiet git -C "$dr" show-ref --verify refs/heads/dr-stale
+assert "run completed after the failed fetch" quiet grep "==> done" <<<"$out_dr"
+# (Outcome only: on git >= 2.48 the retry fetch itself repairs the ref,
+# so the explicit-repair narration is version-dependent.)
+assert "origin/HEAD repaired via the origin-only retry" \
+  quiet git -C "$dr" symbolic-ref refs/remotes/origin/HEAD
+
+# --- missing origin/HEAD is repaired so non-main defaults still resolve -----
+trunk_seed="$sandbox/trunk-seed"
+git init -q -b trunk "$trunk_seed"
+git -C "$trunk_seed" config user.email tidy-test@example.invalid
+git -C "$trunk_seed" config user.name tidy-test
+echo t > "$trunk_seed/t.txt"
+git -C "$trunk_seed" add t.txt
+git -C "$trunk_seed" commit -qm trunk-initial
+git init -q --bare "$sandbox/trunk-origin.git"
+git -C "$sandbox/trunk-origin.git" symbolic-ref HEAD refs/heads/trunk
+git -C "$trunk_seed" remote add origin "$sandbox/trunk-origin.git"
+git -C "$trunk_seed" push -q origin trunk
+trunkc="$sandbox/trunkc"
+git clone -q "$sandbox/trunk-origin.git" "$trunkc" 2>/dev/null
+git -C "$trunkc" remote set-head origin -d
+git -C "$trunkc" branch -q tnb
+trunk_status=0
+quiet sh -c "cd '$trunkc' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || trunk_status=$?
+assert "tidy exits 0 with missing origin/HEAD" test "$trunk_status" -eq 0
+assert "origin/HEAD repaired" \
+  test "$(git -C "$trunkc" symbolic-ref refs/remotes/origin/HEAD)" = refs/remotes/origin/trunk
+assert_not "redundant branch cleaned once the default resolved" \
+  quiet git -C "$trunkc" show-ref --verify refs/heads/tnb
+
+# --- tidy.local.worktreeDirs: custom containers replace the default ---------
+wd="$sandbox/wdirs"
+git clone -q "$sandbox/origin.git" "$wd" 2>/dev/null
+git -C "$wd" config user.email tidy-test@example.invalid
+git -C "$wd" config user.name tidy-test
+git -C "$wd" config tidy.local.worktreeDirs ".wt:$sandbox/abswt:~/wt-home"
+mkdir -p "$wd/.wt/stale" "$wd/.wt/precious" "$wd/.worktrees/not-scanned" \
+  "$sandbox/abswt/old" "$sandbox/home/wt-home/tilde-stale"
+echo hello > "$wd/.wt/stale/copy.txt"            # content already in the odb
+echo "one of a kind" > "$wd/.wt/precious/wip.txt"
+echo hello > "$wd/.worktrees/not-scanned/copy.txt"
+echo hello > "$sandbox/home/wt-home/tilde-stale/copy.txt"
+wd_status=0
+out_wd="$( (cd "$wd" && HOME="$sandbox/home" run_tidy) 2>&1 )" || wd_status=$?
+assert "tidy exits 0 with custom worktree dirs" test "$wd_status" -eq 0
+assert "saved folder removed from a relative custom dir" test ! -e "$wd/.wt/stale"
+assert "unsaved folder kept in a custom dir" test -f "$wd/.wt/precious/wip.txt"
+assert "unsaved folder reported in a custom dir" \
+  quiet grep "skip .*precious (unsaved work, e.g. wip.txt)" <<<"$out_wd"
+assert "saved folder removed from an absolute custom dir" test ! -e "$sandbox/abswt/old"
+assert "default dir not scanned once overridden" test -d "$wd/.worktrees/not-scanned"
+assert "tilde entry resolves against HOME" test ! -e "$sandbox/home/wt-home/tilde-stale"
+
+# Non-hidden worktrees/ is in the default scan, but tracked content there
+# is part of the project — committed (hence odb-"saved") files must not
+# make a folder a removal candidate.
+tw="$sandbox/trackedwt"
+git clone -q "$sandbox/origin.git" "$tw" 2>/dev/null
+git -C "$tw" config user.email tidy-test@example.invalid
+git -C "$tw" config user.name tidy-test
+mkdir -p "$tw/worktrees/docs" "$tw/worktrees/leftover"
+echo "tracked content" > "$tw/worktrees/docs/notes.md"
+git -C "$tw" add worktrees/docs/notes.md
+git -C "$tw" commit -qm tracked-worktrees-content
+echo hello > "$tw/worktrees/leftover/copy.txt"   # untracked, content in odb
+tw_status=0
+quiet sh -c "cd '$tw' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || tw_status=$?
+assert "tidy exits 0 with a tracked worktrees/ dir" test "$tw_status" -eq 0
+assert "tracked folder under worktrees/ untouched" test -f "$tw/worktrees/docs/notes.md"
+assert "untracked saved leftover under worktrees/ removed" test ! -e "$tw/worktrees/leftover"
+
+# --- --offline: no network, local cleanup still runs ------------------------
+off="$sandbox/offline"
+git clone -q "$sandbox/origin.git" "$off" 2>/dev/null
+git -C "$off" config user.email tidy-test@example.invalid
+git -C "$off" config user.name tidy-test
+git -C "$off" switch -qc off-merged --no-track "origin/$branch"
+echo om > "$off/om.txt"
+git -C "$off" add om.txt
+git -C "$off" commit -qm off-merged-work
+git -C "$off" push -q -u origin off-merged
+git -C "$off" switch -q "$branch"
+quiet git -C "$off" merge --no-ff -m merge-om off-merged
+git -C "$off" push -q origin "HEAD:$branch"
+git -C "$off" fetch -q origin
+off_status=0
+out_off="$( (cd "$off" && "$TIDY_BASH" "$tidy_dir/git-tidy" --offline) 2>&1 )" || off_status=$?
+assert "tidy exits 0 offline" test "$off_status" -eq 0
+assert "offline fetch skip narrated" quiet grep -- "skip fetch (--offline)" <<<"$out_off"
+assert_not "redundant local branch cleaned offline" \
+  quiet git -C "$off" show-ref --verify refs/heads/off-merged
+assert "remote branch untouched offline" \
+  quiet grep "refs/heads/off-merged$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert "remote cleanup skip narrated offline" \
+  quiet grep "skip remote branch cleanup (origin not fetched this run)" <<<"$out_off"
+assert "pull skip narrated offline" \
+  quiet grep "skip pull (origin not fetched this run)" <<<"$out_off"
+
+# --- unreachable origin: the same gates engage automatically ----------------
+unr="$sandbox/unreach"
+git clone -q "$sandbox/origin.git" "$unr" 2>/dev/null
+git -C "$unr" config user.email tidy-test@example.invalid
+git -C "$unr" config user.name tidy-test
+git -C "$unr" branch -q unr-stale
+git -C "$unr" remote set-url origin /nonexistent-origin-path
+unr_status=0
+out_unr="$( (cd "$unr" && run_tidy) 2>&1 )" || unr_status=$?
+assert "tidy exits 0 with unreachable origin" test "$unr_status" -eq 0
+assert "fetch failure survived with unreachable origin" \
+  quiet grep "fetch failed (continuing with the already-fetched state)" <<<"$out_unr"
+assert_not "local cleanup still ran with unreachable origin" \
+  quiet git -C "$unr" show-ref --verify refs/heads/unr-stale
+assert "remote cleanup skipped with unreachable origin" \
+  quiet grep "skip remote branch cleanup (origin not fetched this run)" <<<"$out_unr"
 
 if (( failures > 0 )); then
   echo "$failures test(s) failed"

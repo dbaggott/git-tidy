@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.2"
+VERSION="1.3.0"
 
 print_usage() {
   cat <<'EOF'
@@ -14,7 +14,7 @@ git-tidy — return a repository to a clean baseline: delete branches,
 worktrees, and leftover folders whose work the default branch already
 contains, then sync the checkout to a fresh default branch.
 
-Usage: git tidy [-i|--interactive] [DIR]
+Usage: git tidy [-i|--interactive] [--offline] [DIR]
 
 Without DIR: tidies the current git repository.
 With DIR:    tidies every repository under DIR. Hidden directories are
@@ -37,6 +37,9 @@ uncommitted changes, and folders holding unsaved files.
 
 Options:
   -i, --interactive   Ask y/N before each destructive action.
+      --offline       Skip the network: no fetch, no remote deletions,
+                      no pull. Local cleanup runs against the
+                      last-fetched state.
   -V, --version       Print version and exit.
       --self-upgrade  Fetch the latest version (brew upgrade for
                       Homebrew installs; the installer otherwise).
@@ -48,7 +51,7 @@ Configuration (git config, per repo or --global; details in the README):
   tidy.local.branches         delete (default) | keep | prompt
   tidy.local.worktrees        delete (default) | keep | prompt
   tidy.local.detachedFolders  delete (default) | keep | prompt
-  tidy.github.prLookup        auto (default) | off
+  tidy.local.worktreeDirs     .worktree:.worktrees:worktrees (default)
 
   e.g.  git config --global tidy.local.worktrees prompt
         git config --get-regexp '^tidy\.'   # current configuration
@@ -56,10 +59,12 @@ EOF
 }
 
 interactive=0
+offline=0
 target_dir=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -i|--interactive) interactive=1; shift ;;
+    --offline) offline=1; shift ;;
     -V|--version)
       echo "git-tidy $VERSION"
       exit 0
@@ -136,7 +141,8 @@ if [[ -n "$target_dir" ]]; then
     exit 1
   fi
   pass_args=()
-  (( interactive )) && pass_args=(-i)
+  (( interactive )) && pass_args+=(-i)
+  (( offline )) && pass_args+=(--offline)
   status=0
   while IFS= read -r gitdir; do
     repo="${gitdir%/.git}"
@@ -195,6 +201,47 @@ should_act() {
 
 current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
+# A failed fetch (offline, a dead remote among several) must not abort
+# the run: tidying against the last-fetched state is safe. Staleness
+# only under-detects redundancy — work contained in an old tip is still
+# contained in every newer one, as long as the default branch moves
+# forward (a force-push after the last fetch reopens the ordinary
+# fetch-to-judge race; the commits stay recoverable from the odb until
+# gc expiry) — and remote deletion is lease-protected against the stale
+# OID, so a branch that moved since rejects.
+origin_ok=0
+if (( offline )); then
+  echo "==> skip fetch (--offline)"
+else
+  echo "==> git fetch --all --prune"
+  fetch_ok=1
+  if ! git fetch --all --prune; then
+    fetch_ok=0
+    echo "  fetch failed (continuing with the already-fetched state)"
+  fi
+
+  # fetch --all fails when ANY remote fails; origin itself may be fine,
+  # and everything below that needs the network needs only origin.
+  origin_ok="$fetch_ok"
+  if (( ! fetch_ok )) && git config --get remote.origin.url >/dev/null 2>&1; then
+    if git fetch origin --prune >/dev/null 2>&1; then
+      origin_ok=1
+    fi
+  fi
+
+  # Old clones often lack refs/remotes/origin/HEAD, and the local-branch
+  # fallback below only guesses main/master — a repo whose default branch
+  # is named anything else silently loses most of tidy. Repair the ref
+  # while origin is known reachable. (git >= 2.48 fetch maintains the ref
+  # itself, making this a no-op there; this covers older git.)
+  if (( origin_ok )) && git config --get remote.origin.url >/dev/null 2>&1 \
+     && ! git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+    if git remote set-head origin -a >/dev/null 2>&1; then
+      echo "  repaired origin/HEAD (was unset)"
+    fi
+  fi
+fi
+
 default_branch=""
 if ref="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)"; then
   default_branch="${ref#refs/remotes/origin/}"
@@ -207,9 +254,6 @@ if [[ -z "$default_branch" ]]; then
     fi
   done
 fi
-
-echo "==> git fetch --all --prune"
-git fetch --all --prune
 
 echo "==> git worktree prune"
 git worktree prune
@@ -265,6 +309,14 @@ first_unsaved_file() {
 
 detached_decision="$(decision_for tidy.local.detachedFolders)"
 
+# Where worktree folders live: a colon-separated list of directories whose
+# immediate children are candidates. Relative entries resolve against the
+# main checkout; a configured value replaces the default.
+worktree_dirs="$(git config --get tidy.local.worktreeDirs 2>/dev/null || true)"
+if [[ -z "$worktree_dirs" ]]; then
+  worktree_dirs=".worktree:.worktrees:worktrees"
+fi
+
 detached_dirs=()
 if [[ -n "$main_repo_dir" ]]; then
   registered_worktrees=()
@@ -274,7 +326,19 @@ if [[ -n "$main_repo_dir" ]]; then
     fi
   done < <(git worktree list --porcelain)
 
-  for base in "$main_repo_dir/.worktree" "$main_repo_dir/.worktrees"; do
+  IFS=':' read -r -a worktree_bases <<<"$worktree_dirs"
+  for base in ${worktree_bases[@]+"${worktree_bases[@]}"}; do
+    [[ -n "$base" ]] || continue
+    # git config returns ~ literally; honor it rather than silently
+    # resolving it as a relative path. (The quoted tilde is deliberate:
+    # we are matching the literal character.)
+    # shellcheck disable=SC2088
+    if [[ "$base" == "~" || "$base" == "~/"* ]]; then
+      base="$HOME${base#\~}"
+    fi
+    if [[ "$base" != /* ]]; then
+      base="$main_repo_dir/$base"
+    fi
     [[ -d "$base" ]] || continue
     for dir in "$base"/*/; do
       dir="${dir%/}"
@@ -289,7 +353,16 @@ if [[ -n "$main_repo_dir" ]]; then
           break
         fi
       done
-      (( registered )) || detached_dirs+=("$dir")
+      if (( registered )); then
+        continue
+      fi
+      # A folder holding tracked files is part of the project, not a
+      # worktree leftover — its content being in the odb (it is
+      # committed) must not make it a candidate.
+      if [[ -n "$(git -C "$main_repo_dir" ls-files -- ":(literal)$canon" 2>/dev/null | head -1)" ]]; then
+        continue
+      fi
+      detached_dirs+=("$dir")
     done
   done
 fi
@@ -359,25 +432,21 @@ fi
 
 # --- GitHub PR lookup --------------------------------------------------------
 # When the content probe hits a merge conflict, pure git cannot tell a
-# stale squash-merged branch from live conflicting work. If the repo is on
-# GitHub and gh is available, a merged PR whose head matches the branch tip
-# exactly settles it. tidy.github.prLookup: auto (default) | off.
+# stale squash-merged branch from live conflicting work. A merged PR whose
+# head matches the branch tip exactly settles it, asked through whichever
+# supported hosting-provider CLI matches the origin host (currently gh
+# for github.com). Installing and authenticating the CLI is the opt-in;
+# without one the gate stays closed silently.
 
 github_lookup_state=""  # probed lazily on the first conflict: "yes" / "no"
 github_lookup_available() {
   if [[ -z "$github_lookup_state" ]]; then
     github_lookup_state="no"
-    local setting origin_url
-    setting="$(git config --get tidy.github.prLookup 2>/dev/null || true)"
-    case "$setting" in
-      ""|auto) setting="auto" ;;
-      off) ;;
-      *)
-        echo "git-tidy: ignoring invalid tidy.github.prLookup '$setting' (expected auto or off)" >&2
-        setting="auto"
-        ;;
-    esac
-    if [[ "$setting" == "auto" ]] && command -v gh >/dev/null 2>&1; then
+    if (( ! origin_ok )); then
+      return 1
+    fi
+    local origin_url
+    if command -v gh >/dev/null 2>&1; then
       # The raw configured URL: get-url applies url.*.insteadOf
       # rewrites, which can hide the real host.
       origin_url="$(git config --get remote.origin.url 2>/dev/null || true)"
@@ -441,7 +510,11 @@ branch_redundant() {
 }
 
 # --- redundant remote branches ------------------------------------------------
-if [[ "$merge_target" == refs/remotes/origin/* ]]; then
+# Deleting on origin needs origin: skip the section rather than letting
+# every push attempt time out against an unreachable remote.
+if [[ "$merge_target" == refs/remotes/origin/* ]] && (( ! origin_ok )); then
+  echo "==> skip remote branch cleanup (origin not fetched this run)"
+elif [[ "$merge_target" == refs/remotes/origin/* ]]; then
   remote_decision="$(decision_for tidy.remote.branches)"
 
   remote_scope="$(git config --get tidy.remote.branchScope 2>/dev/null || true)"
@@ -743,9 +816,13 @@ if [[ -n "$default_branch" ]]; then
       fi
     fi
     if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "$default_branch" ]]; then
-      echo "==> git pull --ff-only"
-      if ! git pull --ff-only; then
-        echo "  pull failed; leaving the checkout as-is"
+      if (( origin_ok )); then
+        echo "==> git pull --ff-only"
+        if ! git pull --ff-only; then
+          echo "  pull failed; leaving the checkout as-is"
+        fi
+      else
+        echo "==> skip pull (origin not fetched this run)"
       fi
     fi
   fi
