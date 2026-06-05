@@ -567,6 +567,23 @@ assert "brew install detected" quiet grep "Homebrew install detected" <<<"$out_b
 assert "upgrade routed through brew" quiet grep "brew-stub: upgrade git-tidy" <<<"$out_bu"
 assert_not "curl installer not run for a brew install" quiet grep "fetching latest installer" <<<"$out_bu"
 
+# brew's opt/ path symlinks the directory, not the file — must still detect
+mkdir -p "$sandbox/homebrew/opt"
+ln -s "../Cellar/git-tidy/9.9.9" "$sandbox/homebrew/opt/git-tidy"
+opt_status=0
+out_opt="$(PATH="$sandbox/stubbin:$PATH" "$TIDY_BASH" "$sandbox/homebrew/opt/git-tidy/bin/git-tidy" --self-upgrade 2>&1)" || opt_status=$?
+assert "--self-upgrade exits 0 via the opt/ path" test "$opt_status" -eq 0
+assert "brew detected through a directory symlink" quiet grep "brew-stub: upgrade git-tidy" <<<"$out_opt"
+assert_not "curl installer not run via the opt/ path" quiet grep "fetching latest installer" <<<"$out_opt"
+
+# brew-managed copy but brew not on PATH: explain and stop
+sys_bash="$(command -v "$TIDY_BASH")"
+nobrew_status=0
+out_nobrew="$(PATH=/usr/bin:/bin "$sys_bash" "$cellar_bin/git-tidy" --self-upgrade 2>&1)" || nobrew_status=$?
+assert "--self-upgrade exits 1 without brew on PATH" test "$nobrew_status" -eq 1
+assert "missing brew explained" quiet grep "upgrade with: brew upgrade git-tidy" <<<"$out_nobrew"
+assert_not "curl installer not run without brew" quiet grep "fetching latest installer" <<<"$out_nobrew"
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1

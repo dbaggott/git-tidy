@@ -92,11 +92,20 @@ while [[ $# -gt 0 ]]; do
       # or shadowed by this one depending on PATH order. Detect brew by
       # resolving the running script's own path into the Cellar.
       self="${BASH_SOURCE[0]}"
-      while [[ -L "$self" ]]; do
+      # Follow file symlinks (hop-capped: a symlink cycle must not hang
+      # the flag), then canonicalize the directory — brew's opt/ path
+      # symlinks the directory rather than the file, so following file
+      # symlinks alone would miss it.
+      hops=0
+      while [[ -L "$self" ]] && (( hops < 40 )); do
         link="$(readlink "$self")"
         [[ "$link" == /* ]] || link="$(dirname "$self")/$link"
         self="$link"
+        hops=$((hops + 1))
       done
+      if self_dir="$(cd "$(dirname "$self")" 2>/dev/null && pwd -P)"; then
+        self="$self_dir/$(basename "$self")"
+      fi
       if [[ "$self" == */Cellar/git-tidy/* ]]; then
         if command -v brew >/dev/null 2>&1; then
           echo "git-tidy: Homebrew install detected; running brew upgrade git-tidy..."
