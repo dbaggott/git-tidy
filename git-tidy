@@ -435,11 +435,12 @@ worktree_for() {
   done < <(git worktree list --porcelain)
 }
 
-# Print the per-branch grouping header before its first narrated action;
-# finished branches that keep gates silently hold back never announce.
+# Print the per-branch grouping header ($1) before the branch's first
+# narrated action; finished branches that keep gates silently hold back
+# never announce.
 announce_branch() {
   if (( ! branch_announced )); then
-    echo "  $branch:"
+    echo "  $1:"
     branch_announced=1
   fi
 }
@@ -494,11 +495,11 @@ if [[ -n "$merge_target" ]]; then
             continue
           fi
           if [[ -n "$(git -C "$wt" status --porcelain -uno)" ]]; then
-            announce_branch
+            announce_branch "$branch"
             echo "    skip (checked out at $wt; tracked files have uncommitted changes)"
             continue
           fi
-          announce_branch
+          announce_branch "$branch"
           if ! should_act "$local_decision" "    switch $wt to $default_branch and delete branch $branch?"; then
             echo "    skip"
             continue
@@ -527,16 +528,16 @@ if [[ -n "$merge_target" ]]; then
           continue
         fi
         if [[ "$cwd_canon" == "$wt_canon" || "$cwd_canon" == "$wt_canon"/* ]]; then
-          announce_branch
+          announce_branch "$branch"
           echo "    skip (checked out in current worktree $wt)"
           continue
         fi
         if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
-          announce_branch
+          announce_branch "$branch"
           echo "    skip (worktree $wt not clean)"
           continue
         fi
-        announce_branch
+        announce_branch "$branch"
         if ! should_act "$worktree_decision" "    remove worktree $wt (branch $branch)?"; then
           echo "    skip (worktree kept)"
           continue
@@ -553,7 +554,7 @@ if [[ -n "$merge_target" ]]; then
         kept_branches=$((kept_branches + 1))
         continue
       fi
-      announce_branch
+      announce_branch "$branch"
       if ! should_act "$local_decision" "    delete branch $branch?"; then
         echo "    skip"
         continue

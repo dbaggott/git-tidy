@@ -117,7 +117,7 @@ out_plain="$( (cd "$plain" && run_tidy) 2>&1 )" || plain_status=$?
 assert "tidy exits 0 in plain repo" test "$plain_status" -eq 0
 assert_not "no detached-folder output for plain repo" quiet grep detached <<<"$out_plain"
 
-# --- sync gate: other worktrees block switching, not the ff-only pull
+# --- sync gate: unmerged work blocks the switch; worktrees never block
 sync="$sandbox/sync"
 git clone -q "$sandbox/origin.git" "$sync" 2>/dev/null
 git -C "$sync" config user.email tidy-test@example.invalid
@@ -264,6 +264,9 @@ assert "worktree with unfinished work kept" test -d "$life/.worktrees/live-wt"
 assert "dirty worktree kept" test -f "$life/.worktrees/dirty-wt/precious.txt"
 assert "dirty worktree reported" quiet grep "skip (worktree .*dirty-wt not clean)" <<<"$out_life"
 assert "branch narration grouped per branch" quiet grep "^  swt:$" <<<"$out_life"
+swt_block="$(grep -A2 '^  swt:$' <<<"$out_life")"
+assert "worktree removal nests under the branch header" quiet grep "removed worktree" <<<"$swt_block"
+assert "branch deletion nests under the branch header" quiet grep "deleted branch" <<<"$swt_block"
 
 assert "main checkout switched off finished branch" \
   test "$(git -C "$life" symbolic-ref --short HEAD)" = "$branch"
@@ -447,6 +450,29 @@ assert "tidy exits 0 when the ff-pull collides with an untracked file" test "$co
 assert "pull failure reported" quiet grep "pull failed; leaving the checkout as-is" <<<"$out_coll"
 assert "run completes after pull failure" quiet grep "==> done" <<<"$out_coll"
 assert "untracked file preserved" test "$(cat "$coll/scratch.txt")" = local-scratch
+
+# --- the sync-stage switch proceeds while another worktree exists -----------
+# tidy.local.branches keep matters: without it the fully-merged parked branch
+# counts as finished and the *cleanup* stage does the switch, so the
+# sync-gate path would never execute.
+swx="$sandbox/syncwx"
+git clone -q "$sandbox/origin.git" "$swx" 2>/dev/null
+git -C "$swx" config user.email tidy-test@example.invalid
+git -C "$swx" config user.name tidy-test
+git -C "$swx" config tidy.local.branches keep
+git -C "$swx" worktree add -q "$swx/.worktrees/swx-live" -b swx-live "$branch"
+echo sl > "$swx/.worktrees/swx-live/sl.txt"
+git -C "$swx/.worktrees/swx-live" add sl.txt
+git -C "$swx/.worktrees/swx-live" commit -qm swx-live-work
+git -C "$swx" switch -qc swx-parked --no-track "origin/$branch"
+swx_status=0
+out_swx="$( (cd "$swx" && run_tidy) 2>&1 )" || swx_status=$?
+assert "tidy exits 0 in sync-switch fixture" test "$swx_status" -eq 0
+assert "sync switch runs despite another worktree" quiet grep -- "==> git switch $branch" <<<"$out_swx"
+assert "checkout lands on the default branch" \
+  test "$(git -C "$swx" symbolic-ref --short HEAD)" = "$branch"
+assert "live worktree untouched by the sync" test -f "$swx/.worktrees/swx-live/sl.txt"
+assert "parked branch kept per config" quiet git -C "$swx" show-ref --verify refs/heads/swx-parked
 
 # --- mixed keep configs stay observable: kept items are counted -------------
 mixed="$sandbox/mixed"
