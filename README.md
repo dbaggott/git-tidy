@@ -12,10 +12,12 @@ $ git tidy
   deleted origin/old-feature
   deleted origin/squashed-feature
 ==> cleaning 2 finished local branch(es)
-  removed worktree .worktrees/old-feature
-  deleted branch old-feature
-  switched /path/to/repo to main
-  deleted branch squashed-feature
+  old-feature:
+    removed worktree .worktrees/old-feature
+    deleted branch
+  squashed-feature:
+    switched /path/to/repo to main
+    deleted branch
 ==> git pull --ff-only
 ==> git gc
 ==> done

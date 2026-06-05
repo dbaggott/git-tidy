@@ -93,7 +93,7 @@ assert "folder containing a nested registered worktree untouched" \
   quiet git -C "$repo/.worktrees/nested/inner" rev-parse --verify HEAD
 assert "keep config leaves finished branch alone" \
   git -C "$repo" show-ref --verify --quiet refs/heads/wt-clean
-assert_not "keep config is quiet about kept branches" quiet grep "skip branch" <<<"$out"
+assert_not "keep config is quiet about kept branches" quiet grep "^    skip" <<<"$out"
 assert "kept finished branches summarized" \
   quiet grep "keeping 4 finished local branch(es) (tidy.local.branches keep)" <<<"$out"
 if [[ "$(id -u)" != 0 ]]; then  # root can read through chmod 000
@@ -149,7 +149,7 @@ parked_status=0
 out_parked="$( (cd "$sync" && run_tidy) 2>&1 )" || parked_status=$?
 assert "tidy exits 0 on parked branch" test "$parked_status" -eq 0
 assert "switch away still blocked by other worktree" \
-  quiet grep "skip sync to $branch (1 other worktree(s) present)" <<<"$out_parked"
+  quiet grep "skip sync to $branch (1 other worktree(s) present; HEAD has 1 commit(s) not on origin/$branch)" <<<"$out_parked"
 assert "still on parked branch" \
   test "$(git -C "$sync" symbolic-ref --short HEAD)" = parked
 
@@ -262,7 +262,8 @@ assert "gone-unmerged branch reported" quiet grep "keep gone-unmerged (upstream 
 assert "squash-merged worktree removed" test ! -e "$life/.worktrees/swt"
 assert "worktree with unfinished work kept" test -d "$life/.worktrees/live-wt"
 assert "dirty worktree kept" test -f "$life/.worktrees/dirty-wt/precious.txt"
-assert "dirty worktree reported" quiet grep "skip worktree .*dirty-wt (working tree not clean)" <<<"$out_life"
+assert "dirty worktree reported" quiet grep "skip (worktree .*dirty-wt not clean)" <<<"$out_life"
+assert "branch narration grouped per branch" quiet grep "^  swt:$" <<<"$out_life"
 
 assert "main checkout switched off finished branch" \
   test "$(git -C "$life" symbolic-ref --short HEAD)" = "$branch"
@@ -299,7 +300,7 @@ assert "tidy exits 0 from inside a finished-branch worktree" test "$inside_statu
 assert "current worktree not removed" test -d "$guard/.worktrees/inside"
 assert "current worktree's branch kept" quiet git -C "$guard" show-ref --verify refs/heads/inside
 assert "current worktree skip reported" \
-  quiet grep "skip branch inside (checked out in current worktree" <<<"$out_inside"
+  quiet grep "skip (checked out in current worktree" <<<"$out_inside"
 
 # Main checkout on a finished branch with uncommitted tracked changes: the
 # switch-away is blocked, so the branch survives.
@@ -312,7 +313,7 @@ assert "dirty checkout's finished branch kept" quiet git -C "$guard" show-ref --
 assert "still on the dirty finished branch" \
   test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
 assert "dirty checkout skip reported" \
-  quiet grep "skip branch parked-dirty (checked out at .*tracked files have uncommitted changes)" <<<"$out_dirty"
+  quiet grep "skip (checked out at .*tracked files have uncommitted changes)" <<<"$out_dirty"
 
 # Default branch checked out in another worktree: the switch fails, so the
 # finished branch survives with the failure reported.
@@ -325,7 +326,7 @@ assert "switch-blocked finished branch kept" quiet git -C "$guard" show-ref --ve
 assert "still on the switch-blocked branch" \
   test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
 assert "switch failure reported" \
-  quiet grep "skip branch parked-dirty (cannot switch to $branch" <<<"$out_swfail"
+  quiet grep "skip (cannot switch to $branch" <<<"$out_swfail"
 
 # A branch that conflicts with the default branch is not finished: the
 # merge-tree probe must answer "keep", locally and on origin.
