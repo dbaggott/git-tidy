@@ -27,7 +27,7 @@ origin (only ones a local branch tracks, by default), then redundant
 local branches and their worktrees; when nothing is in progress, switch
 to the default branch and ff-only pull; git gc.
 
-A branch is redundant when deleting it loses nothing: every commit it
+A branch is redundant when deleting it loses nothing: every change it
 carries is already on origin/<default-branch> — merged, squash- or
 rebase-merged (detected by content; needs git >= 2.38), or vouched for
 by a merged GitHub PR matching its tip exactly (needs the gh CLI and a
