@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="1.0.0"
 
 print_usage() {
   cat <<'EOF'
