@@ -44,6 +44,9 @@ Each cleanup decision is configurable via `git config` (per repo, or `--global` 
 # Example: never touch origin, ask before removing worktrees
 git config --global tidy.remote.branches keep
 git config --global tidy.local.worktrees prompt
+
+# See every tidy setting in effect (all scopes)
+git config --get-regexp '^tidy\.'
 ```
 
 `-i` upgrades every configured `delete` to `prompt` for that run; `keep` stays `keep`.
