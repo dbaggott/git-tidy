@@ -282,6 +282,114 @@ assert "remote branch with unfinished work still kept" quiet grep "refs/heads/li
 assert "invalid decision value warns" \
   quiet grep "ignoring invalid tidy.local.detachedFolders" <<<"$out_life2"
 
+# --- safety guards around checked-out finished branches ---------------------
+guard="$sandbox/guard"
+git clone -q "$sandbox/origin.git" "$guard" 2>/dev/null
+git -C "$guard" config user.email tidy-test@example.invalid
+git -C "$guard" config user.name tidy-test
+
+# Running from inside a worktree on a finished branch: tidy must not remove
+# the worktree it is standing in.
+git -C "$guard" worktree add -q "$guard/.worktrees/inside" -b inside "$branch"
+inside_status=0
+out_inside="$( (cd "$guard/.worktrees/inside" && run_tidy) 2>&1 )" || inside_status=$?
+assert "tidy exits 0 from inside a finished-branch worktree" test "$inside_status" -eq 0
+assert "current worktree not removed" test -d "$guard/.worktrees/inside"
+assert "current worktree's branch kept" quiet git -C "$guard" show-ref --verify refs/heads/inside
+assert "current worktree skip reported" \
+  quiet grep "skip branch inside (checked out in current worktree" <<<"$out_inside"
+
+# Main checkout on a finished branch with uncommitted tracked changes: the
+# switch-away is blocked, so the branch survives.
+git -C "$guard" switch -qc parked-dirty --no-track "origin/$branch"
+echo dirt >> "$guard/file.txt"
+dirty_status=0
+out_dirty="$( (cd "$guard" && run_tidy) 2>&1 )" || dirty_status=$?
+assert "tidy exits 0 with dirty main checkout" test "$dirty_status" -eq 0
+assert "dirty checkout's finished branch kept" quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
+assert "still on the dirty finished branch" \
+  test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
+assert "dirty checkout skip reported" \
+  quiet grep "skip branch parked-dirty (checked out at .*tracked files have uncommitted changes)" <<<"$out_dirty"
+
+# Default branch checked out in another worktree: the switch fails, so the
+# finished branch survives with the failure reported.
+git -C "$guard" checkout -q -- file.txt
+git -C "$guard" worktree add -q "$guard/.worktrees/wt-main" "$branch"
+swfail_status=0
+out_swfail="$( (cd "$guard" && run_tidy) 2>&1 )" || swfail_status=$?
+assert "tidy exits 0 when switch is blocked" test "$swfail_status" -eq 0
+assert "switch-blocked finished branch kept" quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
+assert "still on the switch-blocked branch" \
+  test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
+assert "switch failure reported" \
+  quiet grep "skip branch parked-dirty (cannot switch to $branch" <<<"$out_swfail"
+
+# A branch that conflicts with the default branch is not finished: the
+# merge-tree probe must answer "keep", locally and on origin.
+git -C "$guard" switch -qc conflicted --no-track "origin/$branch"
+echo mine > "$guard/sub/inner.txt"
+git -C "$guard" commit -qam conflicted-work
+git -C "$guard" push -q -u origin conflicted
+echo theirs > "$dev/sub/inner.txt"
+git -C "$dev" commit -qam conflicting-change
+git -C "$dev" push -q origin "HEAD:refs/heads/$branch"
+conflict_status=0
+quiet sh -c "cd '$guard' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || conflict_status=$?
+assert "tidy exits 0 with a conflicting branch" test "$conflict_status" -eq 0
+assert "conflicting local branch kept" quiet git -C "$guard" show-ref --verify refs/heads/conflicted
+assert "conflicting remote branch kept" \
+  quiet grep "refs/heads/conflicted$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert_not "finished branch deleted once no longer checked out" \
+  quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
+
+# --- tidy.remote.branches keep leaves a genuinely finished remote alone -----
+rk="$sandbox/rk"
+git clone -q "$sandbox/origin.git" "$rk" 2>/dev/null
+git -C "$rk" config user.email tidy-test@example.invalid
+git -C "$rk" config user.name tidy-test
+git -C "$rk" config tidy.remote.branches keep
+git -C "$rk" switch -qc rk-merged --no-track "origin/$branch"
+echo rk > "$rk/rk.txt"
+git -C "$rk" add rk.txt
+git -C "$rk" commit -qm rk-work
+git -C "$rk" push -q -u origin rk-merged
+git -C "$dev" fetch -q origin
+quiet git -C "$dev" merge --no-ff -m merge-rk origin/rk-merged
+git -C "$dev" push -q origin "HEAD:refs/heads/$branch"
+git -C "$rk" switch -q "$branch"
+rk_status=0
+quiet sh -c "cd '$rk' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || rk_status=$?
+assert "tidy exits 0 with remote keep" test "$rk_status" -eq 0
+assert "remote keep leaves merged remote branch" \
+  quiet grep "refs/heads/rk-merged$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert_not "merged local branch still deleted under remote keep" \
+  quiet git -C "$rk" show-ref --verify refs/heads/rk-merged
+
+# --- remote-less repo: finished means contained in the local default branch -
+solo="$sandbox/solo"
+git init -q -b main "$solo"
+git -C "$solo" config user.email tidy-test@example.invalid
+git -C "$solo" config user.name tidy-test
+echo a > "$solo/a.txt"
+git -C "$solo" add a.txt
+git -C "$solo" commit -qm initial
+git -C "$solo" branch -q done-work
+git -C "$solo" switch -qc active
+echo b > "$solo/b.txt"
+git -C "$solo" add b.txt
+git -C "$solo" commit -qm active-work
+git -C "$solo" switch -q main
+solo_status=0
+out_solo="$( (cd "$solo" && run_tidy) 2>&1 )" || solo_status=$?
+assert "tidy exits 0 in remote-less repo" test "$solo_status" -eq 0
+assert_not "contained branch deleted in remote-less repo" \
+  quiet git -C "$solo" show-ref --verify refs/heads/done-work
+assert "branch with unique work kept in remote-less repo" \
+  quiet git -C "$solo" show-ref --verify refs/heads/active
+assert "sync skip reported without origin" \
+  quiet grep "skip sync to main (cannot compare HEAD to origin/main)" <<<"$out_solo"
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed"
   exit 1
