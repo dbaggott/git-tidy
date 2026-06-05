@@ -52,7 +52,6 @@ Configuration (git config, per repo or --global; details in the README):
   tidy.local.worktrees        delete (default) | keep | prompt
   tidy.local.detachedFolders  delete (default) | keep | prompt
   tidy.local.worktreeDirs     .worktree:.worktrees:worktrees (default)
-  tidy.prLookup               auto (default) | off
 
   e.g.  git config --global tidy.local.worktrees prompt
         git config --get-regexp '^tidy\.'   # current configuration
@@ -435,9 +434,9 @@ fi
 # When the content probe hits a merge conflict, pure git cannot tell a
 # stale squash-merged branch from live conflicting work. A merged PR whose
 # head matches the branch tip exactly settles it, asked through whichever
-# supported forge CLI matches the origin host (currently gh for
-# github.com). tidy.prLookup: auto (default) | off — off is the escape
-# hatch for environments where local tooling must not call out.
+# supported hosting-provider CLI matches the origin host (currently gh
+# for github.com). Installing and authenticating the CLI is the opt-in;
+# without one the gate stays closed silently.
 
 github_lookup_state=""  # probed lazily on the first conflict: "yes" / "no"
 github_lookup_available() {
@@ -446,17 +445,8 @@ github_lookup_available() {
     if (( ! origin_ok )); then
       return 1
     fi
-    local setting origin_url
-    setting="$(git config --get tidy.prLookup 2>/dev/null || true)"
-    case "$setting" in
-      ""|auto) setting="auto" ;;
-      off) ;;
-      *)
-        echo "git-tidy: ignoring invalid tidy.prLookup '$setting' (expected auto or off)" >&2
-        setting="auto"
-        ;;
-    esac
-    if [[ "$setting" == "auto" ]] && command -v gh >/dev/null 2>&1; then
+    local origin_url
+    if command -v gh >/dev/null 2>&1; then
       # The raw configured URL: get-url applies url.*.insteadOf
       # rewrites, which can hide the real host.
       origin_url="$(git config --get remote.origin.url 2>/dev/null || true)"

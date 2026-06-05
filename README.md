@@ -41,9 +41,6 @@ Each cleanup decision is configurable via `git config` (per repo, or `--global` 
 | `tidy.local.worktrees` | `delete` (default) \| `keep` \| `prompt` | worktrees checked out on a redundant branch |
 | `tidy.local.detachedFolders` | `delete` (default) \| `keep` \| `prompt` | detached folders under the worktree dirs |
 | `tidy.local.worktreeDirs` | `.worktree:.worktrees:worktrees` (default) | where worktree folders live |
-| `tidy.prLookup` | `auto` (default) \| `off` | the merged-PR lookup for conflicted branches |
-
-`tidy.prLookup` controls the merged-PR lookup for conflict-stranded branches described above: `auto` (default) asks through whichever supported forge CLI matches the origin host — currently `gh` for github.com origins, installed and authenticated; misses and unavailability are silent, falling back to keep. `off` never calls out — the switch for air-gapped or policy-restricted environments, since this lookup is the only thing in git-tidy that talks to a service beyond git itself.
 
 `tidy.local.worktreeDirs` is a colon-separated list of directories whose immediate children are treated as worktree folders for the detached-folder cleanup. Relative entries resolve against the main checkout (`.wt`, `worktrees`); absolute entries are used as-is (a centralized `~/worktrees/myrepo`). A configured value replaces the default rather than extending it. Point it only at dedicated worktree containers — anything under these directories that git doesn't list as a worktree is a removal candidate, though folders holding tracked files or unsaved work are never touched.
 

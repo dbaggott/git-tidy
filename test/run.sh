@@ -601,15 +601,6 @@ fi
 STUB
 chmod +x "$sandbox/ghstub/gh"
 
-# Lookup off: the conflicted branch stays unjudged and kept.
-git -C "$ghx" config tidy.prLookup off
-ghx_off_status=0
-quiet sh -c "cd '$ghx' && PATH='$sandbox/ghstub':\$PATH '$TIDY_BASH' '$tidy_dir/git-tidy'" || ghx_off_status=$?
-assert "tidy exits 0 with prLookup off" test "$ghx_off_status" -eq 0
-assert "conflicted branch kept with prLookup off" \
-  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-squashed
-git -C "$ghx" config --unset tidy.prLookup
-
 # Unauthenticated gh: the gate closes silently and the branch is kept.
 mkdir -p "$sandbox/ghstub-noauth"
 printf '#!/bin/sh\nexit 1\n' > "$sandbox/ghstub-noauth/gh"
