@@ -49,6 +49,9 @@ Configuration (git config, per repo or --global; details in the README):
   tidy.local.worktrees        delete (default) | keep | prompt
   tidy.local.detachedFolders  delete (default) | keep | prompt
   tidy.github.prLookup        auto (default) | off
+
+  e.g.  git config --global tidy.local.worktrees prompt
+        git config --get-regexp '^tidy\.'   # everything in effect
 EOF
 }
 
