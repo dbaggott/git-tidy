@@ -6,80 +6,50 @@
 
 set -euo pipefail
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 print_usage() {
   cat <<'EOF'
+git-tidy — return a repository to a clean baseline: delete branches,
+worktrees, and leftover folders whose work the default branch already
+contains, then sync the checkout to a fresh default branch.
+
 Usage: git tidy [-i|--interactive] [DIR]
 
 Without DIR: tidies the current git repository.
-With DIR:    finds every git repository under DIR and tidies each.
-             Hidden directories under DIR are not searched, leaving
-             vendored checkouts (e.g. .terraform/modules) and tool
-             caches alone.
+With DIR:    tidies every repository under DIR. Hidden directories are
+             not searched, leaving vendored checkouts and tool caches
+             alone.
 
-For each repository:
-  1. git fetch --all --prune
-  2. git worktree prune (drop admin records for missing worktree dirs)
-  3. Remove detached folders under .worktree/ or .worktrees/ that git no
-     longer lists as worktrees
-  4. Delete branches on origin whose work is finished
-  5. Delete local branches — and remove their worktrees — whose work is
-     finished
-  6. If no in-progress work, switch to the default branch and ff-only pull
-  7. git gc
+Each run: git fetch --all --prune and git worktree prune; remove
+detached folders left under .worktree[s]/; delete finished branches on
+origin (only ones a local branch tracks, by default), then finished
+local branches and their worktrees; when nothing is in progress, switch
+to the default branch and ff-only pull; git gc.
 
-A branch counts as finished when the default branch already contains its
-work: its tip is reachable from origin/<default-branch> (merged, or no
-commits of its own yet), or merging it there would change nothing (covers
-squash- and rebase-merged branches; needs git >= 2.38). When that merge
-conflicts, content cannot vouch either way; on a github.com origin with
-the gh CLI installed and authenticated, a merged PR whose head matches
-the branch tip exactly also counts as finished. Work the default
-branch does not contain is never destroyed: such branches are left alone —
-including ones whose upstream is gone (e.g. a PR closed unmerged), which
-are reported. Worktrees are only removed when their working tree is clean,
-and detached folders only when every file's content already exists in the
-repo's object database (i.e. was committed or staged at some point).
-Caution: content that was only ever staged (never committed) counts as
-saved, but once the folder is deleted it is recoverable only via
-`git fsck --lost-found`, and only until git prunes unreachable objects.
-
-Step 4 only considers branches on origin that a local branch tracks (set
-tidy.remote.branchScope to widen it), and leaves a branch alone while a
-local branch is still building on it with unfinished work of its own.
-Step 6 only runs when tracked files have no uncommitted changes
-(untracked files never block — switch and pull leave them alone), HEAD
-has no commits not on origin/<default-branch>, and the default branch
-isn't checked out in another worktree. Other worktrees never block the
-sync: neither the switch nor the ff-only pull can disturb them.
-
-Configuration (git config, per repo or --global). Each decision accepts
-delete, keep, or prompt; the default is delete:
-  tidy.remote.branches        finished branches on origin
-  tidy.local.branches         finished local branches
-  tidy.local.worktrees        worktrees checked out on a finished branch
-  tidy.local.detachedFolders  detached folders under .worktree[s]/
-  tidy.remote.branchScope     which origin branches are candidates:
-                              tracked (default) — only branches some
-                              local branch tracks; all — every branch
-  tidy.github.prLookup        auto (default) — when a branch's merge
-                              conflicts, ask gh whether a merged PR
-                              matches its tip exactly; off — never ask
-
-keep suppresses the per-item narration but stays observable: a one-line
-summary notes held-back candidates. Work at risk is always reported,
-whatever the configuration — branches whose upstream vanished with
-unmerged work, and detached folders holding unsaved files.
+A branch is finished when deleting it loses nothing: every commit it
+carries is already on origin/<default-branch> — merged, squash- or
+rebase-merged (detected by content; needs git >= 2.38), or vouched for
+by a merged GitHub PR matching its tip exactly (needs the gh CLI and a
+github.com origin). Everything else is left alone: branches with
+unmerged work (reported when their upstream is gone), worktrees with
+uncommitted changes, and folders holding unsaved files.
 
 Options:
-  -i, --interactive   Prompt y/N before each destructive action (upgrades
-                      configured delete to prompt; keep stays keep).
+  -i, --interactive   Ask y/N before each destructive action.
   -V, --version       Print version and exit.
-      --self-upgrade  Fetch the latest version: a Homebrew-managed
-                      install upgrades via brew upgrade git-tidy; any
-                      other install re-runs the installer.
+      --self-upgrade  Fetch the latest version (brew upgrade for
+                      Homebrew installs; the installer otherwise).
   -h, --help          Show this help.
+
+Configuration (git config, per repo or --global; details in the README).
+Each decision accepts delete (default), keep, or prompt:
+  tidy.remote.branches        finished branches on origin
+  tidy.local.branches         finished local branches
+  tidy.local.worktrees        worktrees on a finished branch
+  tidy.local.detachedFolders  detached folders under .worktree[s]/
+  tidy.remote.branchScope     tracked (default) | all
+  tidy.github.prLookup        auto (default) | off
 EOF
 }
 
