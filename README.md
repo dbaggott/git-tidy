@@ -36,7 +36,7 @@ Each cleanup decision is configurable via `git config` (per repo, or `--global` 
 | `tidy.local.worktrees` | worktrees checked out on a finished branch |
 | `tidy.local.detachedFolders` | detached folders under `.worktree[s]/` |
 
-`tidy.remote.branchScope` controls which origin branches are candidates: `tracked` (default) considers only branches some local branch tracks — i.e. yours — while `all` considers every branch on origin (for repos where you want one tidy run to sweep everything).
+`tidy.remote.branchScope` controls which origin branches are candidates: `tracked` (default) considers only branches some local branch tracks — i.e. yours — while `all` considers every branch on origin (for repos where you want one tidy run to sweep everything). Either way, a remote branch is left alone while a local branch is still building on it with unfinished work of its own, and deletion is lease-protected: if origin moved after git-tidy's fetch, the delete is refused rather than destroying the newer push.
 
 ```sh
 # Example: never touch origin, ask before removing worktrees

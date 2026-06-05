@@ -39,8 +39,9 @@ Caution: content that was only ever staged (never committed) counts as
 saved, but once the folder is deleted it is recoverable only via
 `git fsck --lost-found`, and only until git prunes unreachable objects.
 
-Step 4 only considers branches on origin that a local branch tracks; set
-tidy.remote.branchScope to widen it. Step 6 only runs when tracked files
+Step 4 only considers branches on origin that a local branch tracks (set
+tidy.remote.branchScope to widen it), and leaves a branch alone while a
+local branch is still building on it with unfinished work of its own. Step 6 only runs when tracked files
 have no uncommitted changes (untracked files never block — switch and
 pull leave them alone) and HEAD has no commits not on
 origin/<default-branch>; switching away from another branch additionally
@@ -354,9 +355,23 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
       if [[ "$remote_scope" == "tracked" && "$tracked_upstreams" != *$'\n'"origin/$name"$'\n'* ]]; then
         continue
       fi
-      if branch_finished "$remote_ref"; then
-        finished_remote+=("$name")
+      if ! branch_finished "$remote_ref"; then
+        continue
       fi
+      # A local branch still building on the remote branch (tracking it,
+      # with unfinished work of its own) means its lifecycle isn't over —
+      # leave the remote branch alone.
+      in_use=0
+      while IFS=$'\t' read -r local_name local_upstream; do
+        if [[ "$local_upstream" == "origin/$name" ]] && ! branch_finished "refs/heads/$local_name"; then
+          in_use=1
+          break
+        fi
+      done < <(git for-each-ref --format='%(refname:short)%09%(upstream:short)' refs/heads)
+      if (( in_use )); then
+        continue
+      fi
+      finished_remote+=("$name")
     done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
   fi
 
@@ -367,7 +382,11 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
         echo "  skip origin/$name"
         continue
       fi
-      if err="$(git push origin --delete "$name" 2>&1)"; then
+      # Lease-protected delete: branch_finished judged the branch as of
+      # our fetch, so refuse if origin has moved since — a push that
+      # landed in between must not be destroyed.
+      if err="$(git push --force-with-lease="refs/heads/$name:$(git rev-parse "refs/remotes/origin/$name")" \
+                  origin ":refs/heads/$name" 2>&1 | tr '\n' ' ')"; then
         echo "  deleted origin/$name"
       else
         echo "  skip origin/$name (push failed: $err)"
@@ -395,9 +414,7 @@ worktree_for() {
 local_decision="$(decision_for tidy.local.branches)"
 worktree_decision="$(decision_for tidy.local.worktrees)"
 
-# keep is leave-as-is, quietly: with both decisions keep there is nothing
-# to do, so skip the scan rather than narrate skips every run.
-if [[ -n "$merge_target" && ( "$local_decision" != "keep" || "$worktree_decision" != "keep" ) ]]; then
+if [[ -n "$merge_target" ]]; then
   finished_local=()
   gone_unmerged=()
   while IFS=$'\t' read -r name track; do
@@ -413,7 +430,12 @@ if [[ -n "$merge_target" && ( "$local_decision" != "keep" || "$worktree_decision
     fi
   done < <(git for-each-ref --format='%(refname:short)%09%(upstream:track)' refs/heads)
 
-  if (( ${#finished_local[@]} == 0 )); then
+  # keep is leave-as-is, quietly: with both decisions keep, skip the action
+  # narration. The gone-but-unmerged report below still prints — it is
+  # information about work at risk, not an action.
+  if [[ "$local_decision" == "keep" && "$worktree_decision" == "keep" ]]; then
+    :
+  elif (( ${#finished_local[@]} == 0 )); then
     echo "==> no finished local branches"
   else
     echo "==> cleaning ${#finished_local[@]} finished local branch(es)"
@@ -539,13 +561,20 @@ if [[ -n "$default_branch" ]]; then
   if [[ -n "$in_progress_reason" ]]; then
     echo "==> skip sync to $default_branch ($in_progress_reason)"
   else
+    # Both steps can fail in normal use now that untracked files don't
+    # gate sync (e.g. an untracked file an incoming tracked one would
+    # overwrite) — report and carry on so gc still runs.
     if [[ "$current_branch" != "$default_branch" ]]; then
       echo "==> git switch $default_branch"
-      git switch --quiet "$default_branch"
+      if ! err="$(git switch --quiet "$default_branch" 2>&1 | tr '\n' ' ')"; then
+        echo "  skip switch ($err)"
+      fi
     fi
     if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "$default_branch" ]]; then
       echo "==> git pull --ff-only"
-      git pull --ff-only
+      if ! git pull --ff-only; then
+        echo "  pull failed; leaving the checkout as-is"
+      fi
     fi
   fi
 fi

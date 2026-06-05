@@ -343,6 +343,22 @@ assert "conflicting remote branch kept" \
 assert_not "finished branch deleted once no longer checked out" \
   quiet git -C "$guard" show-ref --verify refs/heads/parked-dirty
 
+# The gone-but-unmerged report is information, not an action: it must
+# survive an all-keep configuration.
+git -C "$guard" switch -qc gu-keep --no-track "origin/$branch"
+echo gk > "$guard/gk.txt"
+git -C "$guard" add gk.txt
+git -C "$guard" commit -qm gu-keep-work
+git -C "$guard" push -q -u origin gu-keep
+git -C "$guard" push -q origin --delete gu-keep
+git -C "$guard" config tidy.local.branches keep
+git -C "$guard" config tidy.local.worktrees keep
+gk_status=0
+out_gk="$( (cd "$guard" && run_tidy) 2>&1 )" || gk_status=$?
+assert "tidy exits 0 under all-keep config" test "$gk_status" -eq 0
+assert "gone-unmerged still reported under all-keep config" \
+  quiet grep "keep gu-keep (upstream gone)" <<<"$out_gk"
+
 # --- tidy.remote.branches keep leaves a genuinely finished remote alone -----
 rk="$sandbox/rk"
 git clone -q "$sandbox/origin.git" "$rk" 2>/dev/null
@@ -365,6 +381,49 @@ assert "remote keep leaves merged remote branch" \
   quiet grep "refs/heads/rk-merged$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
 assert_not "merged local branch still deleted under remote keep" \
   quiet git -C "$rk" show-ref --verify refs/heads/rk-merged
+
+# --- a merged remote branch still being built on locally is left alone ------
+au="$sandbox/ahead"
+git clone -q "$sandbox/origin.git" "$au" 2>/dev/null
+git -C "$au" config user.email tidy-test@example.invalid
+git -C "$au" config user.name tidy-test
+git -C "$au" switch -qc ahead-work --no-track "origin/$branch"
+echo aw > "$au/aw.txt"
+git -C "$au" add aw.txt
+git -C "$au" commit -qm ahead-work
+git -C "$au" push -q -u origin ahead-work
+git -C "$dev" fetch -q origin
+quiet git -C "$dev" merge --no-ff -m merge-aw origin/ahead-work
+git -C "$dev" push -q origin "HEAD:refs/heads/$branch"
+# more local work on top, unpushed: the lifecycle isn't over
+echo aw2 > "$au/aw2.txt"
+git -C "$au" add aw2.txt
+git -C "$au" commit -qm ahead-more
+git -C "$au" switch -q "$branch"
+au_status=0
+quiet sh -c "cd '$au' && '$TIDY_BASH' '$tidy_dir/git-tidy'" || au_status=$?
+assert "tidy exits 0 with in-use merged remote" test "$au_status" -eq 0
+assert "merged remote branch kept while local builds on it" \
+  quiet grep "refs/heads/ahead-work$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
+assert "local branch building on merged remote kept" \
+  quiet git -C "$au" show-ref --verify refs/heads/ahead-work
+
+# --- a pull collision is reported but does not abort the run ----------------
+coll="$sandbox/coll"
+git clone -q "$sandbox/origin.git" "$coll" 2>/dev/null
+git -C "$coll" config user.email tidy-test@example.invalid
+git -C "$coll" config user.name tidy-test
+echo local-scratch > "$coll/scratch.txt"
+echo upstream > "$dev/scratch.txt"
+git -C "$dev" add scratch.txt
+git -C "$dev" commit -qm scratch
+git -C "$dev" push -q origin "HEAD:refs/heads/$branch"
+coll_status=0
+out_coll="$( (cd "$coll" && run_tidy) 2>&1 )" || coll_status=$?
+assert "tidy exits 0 when the ff-pull collides with an untracked file" test "$coll_status" -eq 0
+assert "pull failure reported" quiet grep "pull failed; leaving the checkout as-is" <<<"$out_coll"
+assert "run completes after pull failure" quiet grep "==> done" <<<"$out_coll"
+assert "untracked file preserved" test "$(cat "$coll/scratch.txt")" = local-scratch
 
 # --- remote-less repo: finished means contained in the local default branch -
 solo="$sandbox/solo"
