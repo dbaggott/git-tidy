@@ -93,7 +93,7 @@ assert "folder containing a nested registered worktree untouched" \
   quiet git -C "$repo/.worktrees/nested/inner" rev-parse --verify HEAD
 assert "keep config leaves finished branch alone" \
   git -C "$repo" show-ref --verify --quiet refs/heads/wt-clean
-assert_not "keep config is quiet about kept branches" quiet grep "skip branch" <<<"$out"
+assert_not "keep config is quiet about kept branches" quiet grep "^    skip" <<<"$out"
 assert "kept finished branches summarized" \
   quiet grep "keeping 4 finished local branch(es) (tidy.local.branches keep)" <<<"$out"
 if [[ "$(id -u)" != 0 ]]; then  # root can read through chmod 000
@@ -117,7 +117,7 @@ out_plain="$( (cd "$plain" && run_tidy) 2>&1 )" || plain_status=$?
 assert "tidy exits 0 in plain repo" test "$plain_status" -eq 0
 assert_not "no detached-folder output for plain repo" quiet grep detached <<<"$out_plain"
 
-# --- sync gate: other worktrees block switching, not the ff-only pull
+# --- sync gate: unmerged work blocks the switch; worktrees never block
 sync="$sandbox/sync"
 git clone -q "$sandbox/origin.git" "$sync" 2>/dev/null
 git -C "$sync" config user.email tidy-test@example.invalid
@@ -148,8 +148,8 @@ git -C "$sync" commit -qm parked-work
 parked_status=0
 out_parked="$( (cd "$sync" && run_tidy) 2>&1 )" || parked_status=$?
 assert "tidy exits 0 on parked branch" test "$parked_status" -eq 0
-assert "switch away still blocked by other worktree" \
-  quiet grep "skip sync to $branch (1 other worktree(s) present)" <<<"$out_parked"
+assert "unmerged work blocks the switch; the worktree alone does not" \
+  quiet grep "skip sync to $branch (HEAD has 1 commit(s) not on origin/$branch)" <<<"$out_parked"
 assert "still on parked branch" \
   test "$(git -C "$sync" symbolic-ref --short HEAD)" = parked
 
@@ -262,7 +262,11 @@ assert "gone-unmerged branch reported" quiet grep "keep gone-unmerged (upstream 
 assert "squash-merged worktree removed" test ! -e "$life/.worktrees/swt"
 assert "worktree with unfinished work kept" test -d "$life/.worktrees/live-wt"
 assert "dirty worktree kept" test -f "$life/.worktrees/dirty-wt/precious.txt"
-assert "dirty worktree reported" quiet grep "skip worktree .*dirty-wt (working tree not clean)" <<<"$out_life"
+assert "dirty worktree reported" quiet grep "skip (worktree .*dirty-wt not clean)" <<<"$out_life"
+assert "branch narration grouped per branch" quiet grep "^  swt:$" <<<"$out_life"
+swt_block="$(grep -A2 '^  swt:$' <<<"$out_life")"
+assert "worktree removal nests under the branch header" quiet grep "removed worktree" <<<"$swt_block"
+assert "branch deletion nests under the branch header" quiet grep "deleted branch" <<<"$swt_block"
 
 assert "main checkout switched off finished branch" \
   test "$(git -C "$life" symbolic-ref --short HEAD)" = "$branch"
@@ -299,7 +303,9 @@ assert "tidy exits 0 from inside a finished-branch worktree" test "$inside_statu
 assert "current worktree not removed" test -d "$guard/.worktrees/inside"
 assert "current worktree's branch kept" quiet git -C "$guard" show-ref --verify refs/heads/inside
 assert "current worktree skip reported" \
-  quiet grep "skip branch inside (checked out in current worktree" <<<"$out_inside"
+  quiet grep "skip (checked out in current worktree" <<<"$out_inside"
+assert "default branch held elsewhere reported as the sync blocker" \
+  quiet grep "skip sync to $branch ($branch checked out at" <<<"$out_inside"
 
 # Main checkout on a finished branch with uncommitted tracked changes: the
 # switch-away is blocked, so the branch survives.
@@ -312,7 +318,7 @@ assert "dirty checkout's finished branch kept" quiet git -C "$guard" show-ref --
 assert "still on the dirty finished branch" \
   test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
 assert "dirty checkout skip reported" \
-  quiet grep "skip branch parked-dirty (checked out at .*tracked files have uncommitted changes)" <<<"$out_dirty"
+  quiet grep "skip (checked out at .*tracked files have uncommitted changes)" <<<"$out_dirty"
 
 # Default branch checked out in another worktree: the switch fails, so the
 # finished branch survives with the failure reported.
@@ -325,7 +331,7 @@ assert "switch-blocked finished branch kept" quiet git -C "$guard" show-ref --ve
 assert "still on the switch-blocked branch" \
   test "$(git -C "$guard" symbolic-ref --short HEAD)" = parked-dirty
 assert "switch failure reported" \
-  quiet grep "skip branch parked-dirty (cannot switch to $branch" <<<"$out_swfail"
+  quiet grep "skip (cannot switch to $branch" <<<"$out_swfail"
 
 # A branch that conflicts with the default branch is not finished: the
 # merge-tree probe must answer "keep", locally and on origin.
@@ -444,6 +450,29 @@ assert "tidy exits 0 when the ff-pull collides with an untracked file" test "$co
 assert "pull failure reported" quiet grep "pull failed; leaving the checkout as-is" <<<"$out_coll"
 assert "run completes after pull failure" quiet grep "==> done" <<<"$out_coll"
 assert "untracked file preserved" test "$(cat "$coll/scratch.txt")" = local-scratch
+
+# --- the sync-stage switch proceeds while another worktree exists -----------
+# tidy.local.branches keep matters: without it the fully-merged parked branch
+# counts as finished and the *cleanup* stage does the switch, so the
+# sync-gate path would never execute.
+swx="$sandbox/syncwx"
+git clone -q "$sandbox/origin.git" "$swx" 2>/dev/null
+git -C "$swx" config user.email tidy-test@example.invalid
+git -C "$swx" config user.name tidy-test
+git -C "$swx" config tidy.local.branches keep
+git -C "$swx" worktree add -q "$swx/.worktrees/swx-live" -b swx-live "$branch"
+echo sl > "$swx/.worktrees/swx-live/sl.txt"
+git -C "$swx/.worktrees/swx-live" add sl.txt
+git -C "$swx/.worktrees/swx-live" commit -qm swx-live-work
+git -C "$swx" switch -qc swx-parked --no-track "origin/$branch"
+swx_status=0
+out_swx="$( (cd "$swx" && run_tidy) 2>&1 )" || swx_status=$?
+assert "tidy exits 0 in sync-switch fixture" test "$swx_status" -eq 0
+assert "sync switch runs despite another worktree" quiet grep -- "==> git switch $branch" <<<"$out_swx"
+assert "checkout lands on the default branch" \
+  test "$(git -C "$swx" symbolic-ref --short HEAD)" = "$branch"
+assert "live worktree untouched by the sync" test -f "$swx/.worktrees/swx-live/sl.txt"
+assert "parked branch kept per config" quiet git -C "$swx" show-ref --verify refs/heads/swx-parked
 
 # --- mixed keep configs stay observable: kept items are counted -------------
 mixed="$sandbox/mixed"

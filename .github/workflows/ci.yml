@@ -13,6 +13,18 @@ jobs:
       - name: Run tests
         run: make test
 
+  # macOS ships bash 3.2, the oldest bash git-tidy supports; run the suite
+  # with git-tidy under /bin/bash so 3.2 compatibility is gated, not just
+  # promised. (shellcheck already runs in the ubuntu job.)
+  test-bash32:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm stock bash is 3.2
+        run: /bin/bash --version | grep -F 'version 3.2'
+      - name: Run tests under bash 3.2
+        run: TIDY_BASH=/bin/bash bash test/run.sh
+
   smoke:
     runs-on: ubuntu-latest
     steps:

@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 print_usage() {
   cat <<'EOF'
@@ -44,13 +44,12 @@ saved, but once the folder is deleted it is recoverable only via
 
 Step 4 only considers branches on origin that a local branch tracks (set
 tidy.remote.branchScope to widen it), and leaves a branch alone while a
-local branch is still building on it with unfinished work of its own. Step 6 only runs when tracked files
-have no uncommitted changes (untracked files never block — switch and
-pull leave them alone) and HEAD has no commits not on
-origin/<default-branch>; switching away from another branch additionally
-requires that no other worktrees exist (when the default branch is
-already checked out, the ff-only pull runs even with other worktrees
-present — it cannot disturb them).
+local branch is still building on it with unfinished work of its own.
+Step 6 only runs when tracked files have no uncommitted changes
+(untracked files never block — switch and pull leave them alone), HEAD
+has no commits not on origin/<default-branch>, and the default branch
+isn't checked out in another worktree. Other worktrees never block the
+sync: neither the switch nor the ff-only pull can disturb them.
 
 Configuration (git config, per repo or --global). Each decision accepts
 delete, keep, or prompt; the default is delete:
@@ -436,6 +435,16 @@ worktree_for() {
   done < <(git worktree list --porcelain)
 }
 
+# Print the per-branch grouping header ($1) before the branch's first
+# narrated action; finished branches that keep gates silently hold back
+# never announce.
+announce_branch() {
+  if (( ! branch_announced )); then
+    echo "  $1:"
+    branch_announced=1
+  fi
+}
+
 # --- finished local branches and their worktrees -------------------------------
 local_decision="$(decision_for tidy.local.branches)"
 worktree_decision="$(decision_for tidy.local.worktrees)"
@@ -472,6 +481,7 @@ if [[ -n "$merge_target" ]]; then
     kept_branches=0
     kept_worktrees=0
     for branch in "${finished_local[@]}"; do
+      branch_announced=0
       wt="$(worktree_for "$branch")"
       if [[ -n "$wt" ]]; then
         wt_canon="$(canonical_dir "$wt")" || wt_canon="$wt"
@@ -485,26 +495,28 @@ if [[ -n "$merge_target" ]]; then
             continue
           fi
           if [[ -n "$(git -C "$wt" status --porcelain -uno)" ]]; then
-            echo "  skip branch $branch (checked out at $wt; tracked files have uncommitted changes)"
+            announce_branch "$branch"
+            echo "    skip (checked out at $wt; tracked files have uncommitted changes)"
             continue
           fi
-          if ! should_act "$local_decision" "  switch $wt to $default_branch and delete branch $branch?"; then
-            echo "  skip branch $branch"
+          announce_branch "$branch"
+          if ! should_act "$local_decision" "    switch $wt to $default_branch and delete branch $branch?"; then
+            echo "    skip"
             continue
           fi
           if err="$(git -C "$wt" switch --quiet "$default_branch" 2>&1)"; then
-            echo "  switched $wt to $default_branch"
+            echo "    switched $wt to $default_branch"
             if [[ "$branch" == "$current_branch" ]]; then
               current_branch="$default_branch"
             fi
           else
-            echo "  skip branch $branch (cannot switch to $default_branch: $err)"
+            echo "    skip (cannot switch to $default_branch: ${err//$'\n'/ })"
             continue
           fi
           if err="$(git branch -D "$branch" 2>&1)"; then
-            echo "  deleted branch $branch"
+            echo "    deleted branch"
           else
-            echo "  skip branch $branch ($err)"
+            echo "    skip (${err//$'\n'/ })"
           fi
           continue
         fi
@@ -516,24 +528,24 @@ if [[ -n "$merge_target" ]]; then
           continue
         fi
         if [[ "$cwd_canon" == "$wt_canon" || "$cwd_canon" == "$wt_canon"/* ]]; then
-          echo "  skip branch $branch (checked out in current worktree $wt)"
+          announce_branch "$branch"
+          echo "    skip (checked out in current worktree $wt)"
           continue
         fi
         if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
-          echo "  skip worktree $wt (working tree not clean)"
-          echo "  skip branch $branch (still checked out at $wt)"
+          announce_branch "$branch"
+          echo "    skip (worktree $wt not clean)"
           continue
         fi
-        if ! should_act "$worktree_decision" "  remove worktree $wt (branch $branch)?"; then
-          echo "  skip worktree $wt"
-          echo "  skip branch $branch (still checked out at $wt)"
+        announce_branch "$branch"
+        if ! should_act "$worktree_decision" "    remove worktree $wt (branch $branch)?"; then
+          echo "    skip (worktree kept)"
           continue
         fi
         if err="$(git worktree remove "$wt" 2>&1)"; then
-          echo "  removed worktree $wt"
+          echo "    removed worktree $wt"
         else
-          echo "  skip worktree $wt: $err"
-          echo "  skip branch $branch (still checked out at $wt)"
+          echo "    skip (cannot remove worktree: ${err//$'\n'/ })"
           continue
         fi
       fi
@@ -542,14 +554,15 @@ if [[ -n "$merge_target" ]]; then
         kept_branches=$((kept_branches + 1))
         continue
       fi
-      if ! should_act "$local_decision" "  delete branch $branch?"; then
-        echo "  skip branch $branch"
+      announce_branch "$branch"
+      if ! should_act "$local_decision" "    delete branch $branch?"; then
+        echo "    skip"
         continue
       fi
       if err="$(git branch -D "$branch" 2>&1)"; then
-        echo "  deleted branch $branch"
+        echo "    deleted branch"
       else
-        echo "  skip branch $branch ($err)"
+        echo "    skip (${err//$'\n'/ })"
       fi
     done
     if (( kept_branches > 0 )); then
@@ -572,35 +585,44 @@ fi
 if [[ -n "$default_branch" ]]; then
   in_progress_reason=""
 
-  total_worktrees=0
-  while IFS= read -r line; do
-    if [[ "$line" == worktree\ * ]]; then
-      total_worktrees=$((total_worktrees + 1))
+  # Other worktrees never block the sync: neither switching this checkout
+  # nor a ff-only pull can disturb them. What blocks is work in *this*
+  # checkout — uncommitted tracked changes, commits not on the default
+  # branch — or the switch being impossible because the default branch is
+  # checked out in another worktree. Untracked files don't block (-uno):
+  # switch and pull leave them alone, and worktrees kept under
+  # .worktree[s]/ always show as untracked.
+  #
+  # Several blockers can hold at once; report all of them — naming only
+  # the first reads as a promise that resolving it would unblock the sync.
+  append_reason() {
+    if [[ -n "$in_progress_reason" ]]; then
+      in_progress_reason="$in_progress_reason; $1"
+    else
+      in_progress_reason="$1"
     fi
-  done < <(git worktree list --porcelain)
-  other_worktrees=$((total_worktrees - 1))
-
-  # Other worktrees signal in-progress work, so leave the checked-out
-  # branch alone — but a ff-only pull cannot disturb them, so they don't
-  # block syncing when the default branch is already checked out.
-  # Untracked files don't block either (-uno): switch and pull leave them
-  # alone, and worktrees kept under .worktree[s]/ always show as untracked.
+  }
   if [[ -z "$current_branch" ]]; then
     # A detached HEAD was parked there deliberately (a pinned checkout,
     # a tool-managed clone) — switching it to the default branch is not
     # tidying, it is undoing someone's arrangement.
-    in_progress_reason="detached HEAD"
-  elif [[ "$current_branch" != "$default_branch" ]] && (( other_worktrees > 0 )); then
-    in_progress_reason="$other_worktrees other worktree(s) present"
-  elif [[ -n "$(git status --porcelain -uno)" ]]; then
-    in_progress_reason="tracked files have uncommitted changes"
-  elif [[ -n "$current_branch" ]]; then
+    append_reason "detached HEAD"
+  else
+    if [[ "$current_branch" != "$default_branch" ]]; then
+      default_wt="$(worktree_for "$default_branch")"
+      if [[ -n "$default_wt" ]]; then
+        append_reason "$default_branch checked out at $default_wt"
+      fi
+    fi
+    if [[ -n "$(git status --porcelain -uno)" ]]; then
+      append_reason "tracked files have uncommitted changes"
+    fi
     if ahead="$(git rev-list --count "origin/$default_branch..HEAD" 2>/dev/null)"; then
       if [[ "$ahead" != "0" ]]; then
-        in_progress_reason="HEAD has $ahead commit(s) not on origin/$default_branch"
+        append_reason "HEAD has $ahead commit(s) not on origin/$default_branch"
       fi
     else
-      in_progress_reason="cannot compare HEAD to origin/$default_branch"
+      append_reason "cannot compare HEAD to origin/$default_branch"
     fi
   fi
 
