@@ -232,7 +232,7 @@ else
   # Old clones often lack refs/remotes/origin/HEAD, and the local-branch
   # fallback below only guesses main/master — a repo whose default branch
   # is named anything else silently loses most of tidy. Repair the ref
-  # while origin is known reachable. (git >= 2.45 fetch maintains the ref
+  # while origin is known reachable. (git >= 2.48 fetch maintains the ref
   # itself, making this a no-op there; this covers older git.)
   if (( origin_ok )) && git config --get remote.origin.url >/dev/null 2>&1 \
      && ! git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then

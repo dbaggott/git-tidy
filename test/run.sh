@@ -715,7 +715,7 @@ assert "fetch failure reported and survived" \
 assert_not "cleanup still ran after the failed fetch" \
   quiet git -C "$dr" show-ref --verify refs/heads/dr-stale
 assert "run completed after the failed fetch" quiet grep "==> done" <<<"$out_dr"
-# (Outcome only: on git >= 2.45 the retry fetch itself repairs the ref,
+# (Outcome only: on git >= 2.48 the retry fetch itself repairs the ref,
 # so the explicit-repair narration is version-dependent.)
 assert "origin/HEAD repaired via the origin-only retry" \
   quiet git -C "$dr" symbolic-ref refs/remotes/origin/HEAD
