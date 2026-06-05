@@ -23,7 +23,7 @@ $ git tidy
 ==> done
 ```
 
-A branch counts as **finished** when the default branch already contains its work — merged, squash- or rebase-merged (detected by content, no forge API needed; requires git ≥ 2.38), or never started (no commits of its own). Work that isn't safely somewhere else is never destroyed: branches with unmerged commits are left alone (even when their upstream is gone — e.g. a PR closed unmerged — those are reported), worktrees are only removed when clean, and detached folders only when every file's content is already in git's object database.
+A branch counts as **finished** when the default branch already contains its work — merged, squash- or rebase-merged (detected by content, no forge API needed; requires git ≥ 2.38), or never started (no commits of its own). One case content can't settle: a squash-merged branch whose territory the default branch has since rewritten — merging it back *conflicts*, which is indistinguishable (in pure git) from live conflicting work. On a github.com origin with the [`gh` CLI](https://cli.github.com) installed and authenticated, git-tidy resolves it by asking whether a **merged** PR's head matches the branch tip exactly, and cites the PR when it acts (`deleted branch (merged as <PR URL>)`). Work that isn't safely somewhere else is never destroyed: branches with unmerged commits are left alone (even when their upstream is gone — e.g. a PR closed unmerged — those are reported), worktrees are only removed when clean, and detached folders only when every file's content is already in git's object database.
 
 Run with `-i` for an interactive prompt before each destructive action, or pass a directory to tidy every repo found beneath it.
 
@@ -37,6 +37,8 @@ Each cleanup decision is configurable via `git config` (per repo, or `--global` 
 | `tidy.local.branches` | finished local branches |
 | `tidy.local.worktrees` | worktrees checked out on a finished branch |
 | `tidy.local.detachedFolders` | detached folders under `.worktree[s]/` |
+
+`tidy.github.prLookup` controls the GitHub fallback for conflict-stranded branches described above: `auto` (default) uses it whenever the origin is github.com and `gh` is installed and authenticated — misses and unavailability are silent, falling back to keep — while `off` never asks.
 
 `tidy.remote.branchScope` controls which origin branches are candidates: `tracked` (default) considers only branches some local branch tracks — i.e. yours — while `all` considers every branch on origin (for repos where you want one tidy run to sweep everything). Either way, a remote branch is left alone while a local branch is still building on it with unfinished work of its own, and deletion is lease-protected: if origin moved after git-tidy's fetch, the delete is refused rather than destroying the newer push.
 

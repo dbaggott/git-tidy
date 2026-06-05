@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 print_usage() {
   cat <<'EOF'
@@ -32,7 +32,10 @@ For each repository:
 A branch counts as finished when the default branch already contains its
 work: its tip is reachable from origin/<default-branch> (merged, or no
 commits of its own yet), or merging it there would change nothing (covers
-squash- and rebase-merged branches; needs git >= 2.38). Work the default
+squash- and rebase-merged branches; needs git >= 2.38). When that merge
+conflicts, content cannot vouch either way; on a github.com origin with
+the gh CLI installed and authenticated, a merged PR whose head matches
+the branch tip exactly also counts as finished. Work the default
 branch does not contain is never destroyed: such branches are left alone —
 including ones whose upstream is gone (e.g. a PR closed unmerged), which
 are reported. Worktrees are only removed when their working tree is clean,
@@ -60,6 +63,9 @@ delete, keep, or prompt; the default is delete:
   tidy.remote.branchScope     which origin branches are candidates:
                               tracked (default) — only branches some
                               local branch tracks; all — every branch
+  tidy.github.prLookup        auto (default) — when a branch's merge
+                              conflicts, ask gh whether a merged PR
+                              matches its tip exactly; off — never ask
 
 keep suppresses the per-item narration but stays observable: a one-line
 summary notes held-back candidates. Work at risk is always reported,
@@ -364,18 +370,85 @@ if [[ -n "$merge_target" ]]; then
   merge_target_tree="$(git rev-parse "$merge_target^{tree}")"
 fi
 
+# --- GitHub PR lookup --------------------------------------------------------
+# When the content probe hits a merge conflict, pure git cannot tell a
+# stale squash-merged branch from live conflicting work. If the repo is on
+# GitHub and gh is available, a merged PR whose head matches the branch tip
+# exactly settles it. tidy.github.prLookup: auto (default) | off.
+
+github_lookup_state=""  # probed lazily on the first conflict: "yes" / "no"
+github_lookup_available() {
+  if [[ -z "$github_lookup_state" ]]; then
+    github_lookup_state="no"
+    local setting origin_url
+    setting="$(git config --get tidy.github.prLookup 2>/dev/null || true)"
+    case "$setting" in
+      ""|auto) setting="auto" ;;
+      off) ;;
+      *)
+        echo "git-tidy: ignoring invalid tidy.github.prLookup '$setting' (expected auto or off)" >&2
+        setting="auto"
+        ;;
+    esac
+    if [[ "$setting" == "auto" ]] && command -v gh >/dev/null 2>&1; then
+      # The raw configured URL: get-url applies url.*.insteadOf
+      # rewrites, which can hide the real host.
+      origin_url="$(git config --get remote.origin.url 2>/dev/null || true)"
+      case "$origin_url" in
+        *github.com[:/]*)
+          if gh auth status >/dev/null 2>&1; then
+            github_lookup_state="yes"
+          fi
+          ;;
+      esac
+    fi
+  fi
+  [[ "$github_lookup_state" == "yes" ]]
+}
+
+# Does a merged GitHub PR account for ref $1's exact tip? On a match, sets
+# branch_finished_via to a citation and returns 0. Memoized per tip OID —
+# the same branch gets judged as a remote and as a local candidate.
+github_pr_memo=$'\n'
+github_merged_pr() {
+  local ref="$1" name oid url rest
+  github_lookup_available || return 1
+  oid="$(git rev-parse "$ref" 2>/dev/null)" || return 1
+  if [[ "$github_pr_memo" == *$'\n'"$oid="* ]]; then
+    rest="${github_pr_memo#*$'\n'"$oid="}"
+    url="${rest%%$'\n'*}"
+  else
+    name="${ref#refs/remotes/origin/}"
+    name="${name#refs/heads/}"
+    url="$(gh pr list --head "$name" --state merged \
+             --json headRefOid,url \
+             --jq "[.[] | select(.headRefOid == \"$oid\") | .url][0] // empty" \
+             2>/dev/null || true)"
+    github_pr_memo="$github_pr_memo$oid=$url"$'\n'
+  fi
+  if [[ -n "$url" ]]; then
+    branch_finished_via="merged as $url"
+    return 0
+  fi
+  return 1
+}
+
 # Does the default branch already contain all work on ref $1? True when the
 # tip is reachable from $merge_target (merged, or never started), or when
 # merging it there would leave $merge_target's tree unchanged (squash- or
-# rebase-merged). A merge conflict means "not finished".
+# rebase-merged). A merge conflict alone means "not finished" — unless a
+# merged GitHub PR vouches for the exact tip (see above), in which case
+# branch_finished_via carries the citation.
 branch_finished() {
   local ref="$1" merged_tree
+  branch_finished_via=""
   if git merge-base --is-ancestor "$ref" "$merge_target" 2>/dev/null; then
     return 0
   fi
   (( have_merge_tree )) || return 1
   if ! merged_tree="$(git merge-tree --write-tree "$merge_target" "$ref" 2>/dev/null)"; then
-    return 1
+    github_merged_pr "$ref"
+    return $?
   fi
   [[ "$merged_tree" == "$merge_target_tree" ]]
 }
@@ -395,6 +468,7 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
   esac
 
   finished_remote=()
+  finished_remote_via=()
   # Scan even under keep — the summary line below keeps the held-back
   # candidates observable.
   # Upstreams of local branches, newline-delimited for a substring test
@@ -411,6 +485,7 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
     if ! branch_finished "$remote_ref"; then
       continue
     fi
+    via="$branch_finished_via"
     # A local branch still building on the remote branch (tracking it,
     # with unfinished work of its own) means its lifecycle isn't over —
     # leave the remote branch alone.
@@ -425,13 +500,16 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
       continue
     fi
     finished_remote+=("$name")
+    finished_remote_via+=("$via")
   done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
 
   if [[ "$remote_decision" == "keep" ]] && (( ${#finished_remote[@]} > 0 )); then
     echo "==> keeping ${#finished_remote[@]} finished remote branch(es) (tidy.remote.branches keep)"
   elif (( ${#finished_remote[@]} > 0 )); then
     echo "==> cleaning ${#finished_remote[@]} finished remote branch(es)"
-    for name in "${finished_remote[@]}"; do
+    for i in "${!finished_remote[@]}"; do
+      name="${finished_remote[$i]}"
+      via="${finished_remote_via[$i]}"
       if ! should_act "$remote_decision" "  delete origin/$name?"; then
         echo "  skip origin/$name"
         continue
@@ -441,7 +519,7 @@ if [[ "$merge_target" == refs/remotes/origin/* ]]; then
       # landed in between must not be destroyed.
       if err="$(git push --force-with-lease="refs/heads/$name:$(git rev-parse "refs/remotes/origin/$name")" \
                   origin ":refs/heads/$name" 2>&1)"; then
-        echo "  deleted origin/$name"
+        echo "  deleted origin/$name${via:+ ($via)}"
       else
         echo "  skip origin/$name (push failed: ${err//$'\n'/ })"
       fi
@@ -480,6 +558,7 @@ worktree_decision="$(decision_for tidy.local.worktrees)"
 
 if [[ -n "$merge_target" ]]; then
   finished_local=()
+  finished_local_via=()
   gone_unmerged=()
   while IFS=$'\t' read -r name track; do
     if [[ "$name" == "$default_branch" ]]; then
@@ -487,6 +566,7 @@ if [[ -n "$merge_target" ]]; then
     fi
     if branch_finished "refs/heads/$name"; then
       finished_local+=("$name")
+      finished_local_via+=("$branch_finished_via")
     elif [[ "$track" == "[gone]" ]]; then
       # The upstream was deleted (e.g. a PR closed unmerged) but the work
       # is nowhere else — deleting the branch would destroy it.
@@ -509,7 +589,9 @@ if [[ -n "$merge_target" ]]; then
     # acts; count what the keep gates swallow so the header still adds up.
     kept_branches=0
     kept_worktrees=0
-    for branch in "${finished_local[@]}"; do
+    for i in "${!finished_local[@]}"; do
+      branch="${finished_local[$i]}"
+      via="${finished_local_via[$i]}"
       branch_announced=0
       wt="$(worktree_for "$branch")"
       if [[ -n "$wt" ]]; then
@@ -543,7 +625,7 @@ if [[ -n "$merge_target" ]]; then
             continue
           fi
           if err="$(git branch -D "$branch" 2>&1)"; then
-            echo "    deleted branch"
+            echo "    deleted branch${via:+ ($via)}"
           else
             echo "    skip (${err//$'\n'/ })"
           fi
@@ -589,7 +671,7 @@ if [[ -n "$merge_target" ]]; then
         continue
       fi
       if err="$(git branch -D "$branch" 2>&1)"; then
-        echo "    deleted branch"
+        echo "    deleted branch${via:+ ($via)}"
       else
         echo "    skip (${err//$'\n'/ })"
       fi
