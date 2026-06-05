@@ -445,6 +445,29 @@ assert "pull failure reported" quiet grep "pull failed; leaving the checkout as-
 assert "run completes after pull failure" quiet grep "==> done" <<<"$out_coll"
 assert "untracked file preserved" test "$(cat "$coll/scratch.txt")" = local-scratch
 
+# --- recursive mode: hidden directories (vendored checkouts) not searched ---
+tree="$sandbox/tree"
+mkdir -p "$tree"
+git clone -q "$sandbox/origin.git" "$tree/app" 2>/dev/null
+mkdir -p "$tree/app/.terraform/modules"
+git init -q "$tree/app/.terraform/modules/vendored"
+rec_status=0
+out_rec="$("$TIDY_BASH" "$tidy_dir/git-tidy" "$tree" 2>&1)" || rec_status=$?
+assert "recursive tidy exits 0" test "$rec_status" -eq 0
+assert "recursive tidy visits the plain repo" quiet grep -xF "### $tree/app" <<<"$out_rec"
+assert_not "repo under a hidden directory not visited" quiet grep -F vendored <<<"$out_rec"
+
+# --- a detached HEAD is someone's arrangement: sync leaves it alone ----------
+det="$sandbox/det"
+git clone -q "$sandbox/origin.git" "$det" 2>/dev/null
+git -C "$det" switch -q --detach
+det_status=0
+out_det="$( (cd "$det" && run_tidy) 2>&1 )" || det_status=$?
+assert "tidy exits 0 on detached HEAD" test "$det_status" -eq 0
+assert "detached HEAD sync skip reported" \
+  quiet grep "skip sync to $branch (detached HEAD)" <<<"$out_det"
+assert_not "still detached after tidy" quiet git -C "$det" symbolic-ref -q HEAD
+
 # --- remote-less repo: finished means contained in the local default branch -
 solo="$sandbox/solo"
 git init -q -b main "$solo"

@@ -14,6 +14,9 @@ Usage: git tidy [-i|--interactive] [DIR]
 
 Without DIR: tidies the current git repository.
 With DIR:    finds every git repository under DIR and tidies each.
+             Hidden directories under DIR are not searched, leaving
+             vendored checkouts (e.g. .terraform/modules) and tool
+             caches alone.
 
 For each repository:
   1. git fetch --all --prune
@@ -122,7 +125,8 @@ if [[ -n "$target_dir" ]]; then
       status=1
     fi
     echo
-  done < <(find "$target_dir" -type d -name .git -prune 2>/dev/null | sort)
+  done < <(find "$target_dir" -mindepth 1 -type d -name '.?*' ! -name .git -prune \
+             -o -type d -name .git -prune -print 2>/dev/null | sort)
   exit "$status"
 fi
 
@@ -568,7 +572,12 @@ if [[ -n "$default_branch" ]]; then
   # block syncing when the default branch is already checked out.
   # Untracked files don't block either (-uno): switch and pull leave them
   # alone, and worktrees kept under .worktree[s]/ always show as untracked.
-  if [[ "$current_branch" != "$default_branch" ]] && (( other_worktrees > 0 )); then
+  if [[ -z "$current_branch" ]]; then
+    # A detached HEAD was parked there deliberately (a pinned checkout,
+    # a tool-managed clone) — switching it to the default branch is not
+    # tidying, it is undoing someone's arrangement.
+    in_progress_reason="detached HEAD"
+  elif [[ "$current_branch" != "$default_branch" ]] && (( other_worktrees > 0 )); then
     in_progress_reason="$other_worktrees other worktree(s) present"
   elif [[ -n "$(git status --porcelain -uno)" ]]; then
     in_progress_reason="tracked files have uncommitted changes"
