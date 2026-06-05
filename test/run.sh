@@ -148,8 +148,8 @@ git -C "$sync" commit -qm parked-work
 parked_status=0
 out_parked="$( (cd "$sync" && run_tidy) 2>&1 )" || parked_status=$?
 assert "tidy exits 0 on parked branch" test "$parked_status" -eq 0
-assert "switch away still blocked by other worktree" \
-  quiet grep "skip sync to $branch (1 other worktree(s) present; HEAD has 1 commit(s) not on origin/$branch)" <<<"$out_parked"
+assert "unmerged work blocks the switch; the worktree alone does not" \
+  quiet grep "skip sync to $branch (HEAD has 1 commit(s) not on origin/$branch)" <<<"$out_parked"
 assert "still on parked branch" \
   test "$(git -C "$sync" symbolic-ref --short HEAD)" = parked
 
@@ -301,6 +301,8 @@ assert "current worktree not removed" test -d "$guard/.worktrees/inside"
 assert "current worktree's branch kept" quiet git -C "$guard" show-ref --verify refs/heads/inside
 assert "current worktree skip reported" \
   quiet grep "skip (checked out in current worktree" <<<"$out_inside"
+assert "default branch held elsewhere reported as the sync blocker" \
+  quiet grep "skip sync to $branch ($branch checked out at" <<<"$out_inside"
 
 # Main checkout on a finished branch with uncommitted tracked changes: the
 # switch-away is blocked, so the branch survives.
