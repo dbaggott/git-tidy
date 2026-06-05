@@ -42,13 +42,12 @@ Options:
                       Homebrew installs; the installer otherwise).
   -h, --help          Show this help.
 
-Configuration (git config, per repo or --global; details in the README).
-Each decision accepts delete (default), keep, or prompt:
-  tidy.remote.branches        redundant branches on origin
-  tidy.local.branches         redundant local branches
-  tidy.local.worktrees        worktrees on a redundant branch
-  tidy.local.detachedFolders  detached folders under .worktree[s]/
+Configuration (git config, per repo or --global; details in the README):
+  tidy.remote.branches        delete (default) | keep | prompt
   tidy.remote.branchScope     tracked (default) | all
+  tidy.local.branches         delete (default) | keep | prompt
+  tidy.local.worktrees        delete (default) | keep | prompt
+  tidy.local.detachedFolders  delete (default) | keep | prompt
   tidy.github.prLookup        auto (default) | off
 EOF
 }

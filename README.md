@@ -33,12 +33,14 @@ Run with `-i` for an interactive prompt before each destructive action, or pass 
 
 Each cleanup decision is configurable via `git config` (per repo, or `--global` for your default workflow). Every decision accepts `delete`, `keep` (leave as-is — no per-item narration, just a one-line summary when candidates are being held back), or `prompt`; the default is `delete`. Work at risk is always reported regardless of configuration: branches whose upstream vanished with unmerged work, and detached folders holding unsaved files.
 
-| Key | Decides what happens to |
-|-----|------------------------|
-| `tidy.remote.branches` | redundant branches on origin |
-| `tidy.local.branches` | redundant local branches |
-| `tidy.local.worktrees` | worktrees checked out on a redundant branch |
-| `tidy.local.detachedFolders` | detached folders under `.worktree[s]/` |
+| Key | Values | Decides what happens to |
+|-----|--------|------------------------|
+| `tidy.remote.branches` | `delete` (default) \| `keep` \| `prompt` | redundant branches on origin |
+| `tidy.remote.branchScope` | `tracked` (default) \| `all` | which origin branches are candidates |
+| `tidy.local.branches` | `delete` (default) \| `keep` \| `prompt` | redundant local branches |
+| `tidy.local.worktrees` | `delete` (default) \| `keep` \| `prompt` | worktrees checked out on a redundant branch |
+| `tidy.local.detachedFolders` | `delete` (default) \| `keep` \| `prompt` | detached folders under `.worktree[s]/` |
+| `tidy.github.prLookup` | `auto` (default) \| `off` | the GitHub fallback for conflicted branches |
 
 `tidy.github.prLookup` controls the GitHub fallback for conflict-stranded branches described above: `auto` (default) uses it whenever the origin is github.com and `gh` is installed and authenticated — misses and unavailability are silent, falling back to keep — while `off` never asks.
 
