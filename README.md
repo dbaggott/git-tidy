@@ -66,7 +66,7 @@ brew tap dbaggott/tap
 brew install git-tidy
 ```
 
-Upgrade with `brew upgrade git-tidy`.
+Upgrade with `git tidy --self-upgrade` — it detects the Homebrew install, refreshes the tap (so a release published minutes ago is visible), and runs `brew upgrade git-tidy`. Running brew directly works too.
 
 ### One-liner installer
 
