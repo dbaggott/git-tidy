@@ -581,23 +581,29 @@ git -C "$ghx" commit -qm ghx-live-work
 git -C "$ghx" push -q -u origin ghx-live
 git -C "$ghx" switch -q "$branch"
 
-# Fake gh: auth always succeeds; pr list emulates the post---jq output,
-# answering only for the merged fixture branch when the query embeds its
-# exact tip OID (the real call's --jq expression contains the OID).
+# mislabeled: a local branch fetched under a name of the user's own choosing
+# (e.g. `git fetch origin pull/77/head:mislabeled`), pointing at the merged
+# PR's head — whose head ref was "ghx-squashed". The old name-based vouch
+# (`gh pr list --head mislabeled`) never matched it; the commit-keyed lookup
+# recognizes it by tip and deletes it like any other merged branch.
+git -C "$ghx" branch mislabeled ghx-squashed
+
+# Fake gh: auth always succeeds; the commits API is emulated as the
+# post---jq output (just the PR URL), answered only for the merged
+# fixture's tip — the real call is
+# `gh api repos/{owner}/{repo}/commits/<oid>/pulls`, so its endpoint path
+# ends in that exact OID. Every other commit heads no merged PR.
 sq_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-squashed)"
 mkdir -p "$sandbox/ghstub"
 cat > "$sandbox/ghstub/gh" <<STUB
 #!/bin/sh
 [ "\$1" = "auth" ] && exit 0
-head=""; oid_seen=0; prev=""
+[ "\$1" = "api" ] || exit 0
 for a in "\$@"; do
-  [ "\$prev" = "--head" ] && head="\$a"
-  case "\$a" in *$sq_oid*) oid_seen=1 ;; esac
-  prev="\$a"
+  case "\$a" in
+    */commits/$sq_oid/pulls) echo "https://github.com/tidy-test/sandbox/pull/77" ;;
+  esac
 done
-if [ "\$head" = "ghx-squashed" ] && [ "\$oid_seen" = 1 ]; then
-  echo "https://github.com/tidy-test/sandbox/pull/77"
-fi
 STUB
 chmod +x "$sandbox/ghstub/gh"
 
@@ -619,6 +625,8 @@ assert "conflicted merged remote branch deleted with citation" \
   quiet grep "deleted origin/ghx-squashed (merged as https://github.com/tidy-test/sandbox/pull/77)" <<<"$out_ghx"
 assert "conflicted merged local branch deleted with citation" \
   quiet grep "deleted branch (merged as https://github.com/tidy-test/sandbox/pull/77)" <<<"$out_ghx"
+assert_not "merged branch deleted regardless of local name" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/mislabeled
 assert_not "merged remote branch gone from origin" \
   quiet grep "refs/heads/ghx-squashed$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
 assert "conflicted unmerged remote branch kept" \

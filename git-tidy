@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 print_usage() {
   cat <<'EOF'
@@ -432,11 +432,13 @@ fi
 
 # --- GitHub PR lookup --------------------------------------------------------
 # When the content probe hits a merge conflict, pure git cannot tell a
-# stale squash-merged branch from live conflicting work. A merged PR whose
-# head matches the branch tip exactly settles it, asked through whichever
-# supported hosting-provider CLI matches the origin host (currently gh
-# for github.com). Installing and authenticating the CLI is the opt-in;
-# without one the gate stays closed silently.
+# stale squash-merged branch from live conflicting work. A merged PR that
+# the branch tip heads settles it, asked through whichever supported
+# hosting-provider CLI matches the origin host (currently gh for
+# github.com). Installing and authenticating the CLI is the opt-in;
+# without one the gate stays closed silently — so on a squash-merging repo,
+# where this lookup is the only thing that reclaims conflict-stranded
+# branches, no gh means merged branches simply accumulate.
 
 github_lookup_state=""  # probed lazily on the first conflict: "yes" / "no"
 github_lookup_available() {
@@ -463,22 +465,33 @@ github_lookup_available() {
 }
 
 # Does a merged GitHub PR account for ref $1's exact tip? On a match, sets
-# branch_redundant_via to a citation and returns 0. Memoized per tip OID —
-# the same branch gets judged as a remote and as a local candidate.
+# branch_redundant_via to a citation and returns 0. Memoized per tip OID.
+#
+# The lookup keys on the commit, not the branch name: it asks the commits
+# API which PRs that exact OID heads, then keeps a merged one. Querying by
+# OID rather than `pr list --head <name>` is what makes a locally-renamed
+# branch (fetched as `prNNN`, say, when the PR head was `feat-x`) still
+# resolve — the name-based query only ever matched when the local branch
+# happened to share the PR's head-ref name. It also makes the per-OID memo
+# exactly right: the answer now depends solely on the OID it's keyed by, so
+# a remote and a local candidate at the same tip genuinely share it.
+#
+# The commit's head PR survives a squash merge: the merge writes a new
+# commit to the default branch, but the PR record keeps head.sha at the
+# original tip, so an exact `.head.sha == oid` match still vouches it. We
+# require that exact-head match (not mere association) so a tip that is
+# only an interior commit of some PR is never mistaken for merged work.
 github_pr_memo=$'\n'
 github_merged_pr() {
-  local ref="$1" name oid url rest
+  local ref="$1" oid url rest
   github_lookup_available || return 1
   oid="$(git rev-parse "$ref" 2>/dev/null)" || return 1
   if [[ "$github_pr_memo" == *$'\n'"$oid="* ]]; then
     rest="${github_pr_memo#*$'\n'"$oid="}"
     url="${rest%%$'\n'*}"
   else
-    name="${ref#refs/remotes/origin/}"
-    name="${name#refs/heads/}"
-    url="$(gh pr list --head "$name" --state merged --limit 100 \
-             --json headRefOid,url \
-             --jq "[.[] | select(.headRefOid == \"$oid\") | .url][0] // empty" \
+    url="$(gh api "repos/{owner}/{repo}/commits/$oid/pulls" \
+             --jq "[.[] | select(.merged_at != null and .head.sha == \"$oid\") | .html_url][0] // empty" \
              2>/dev/null || true)"
     github_pr_memo="$github_pr_memo$oid=$url"$'\n'
   fi
