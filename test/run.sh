@@ -634,6 +634,35 @@ assert "conflicted unmerged remote branch kept" \
 assert "conflicted unmerged local branch kept" \
   quiet git -C "$ghx" show-ref --verify refs/heads/ghx-live
 
+# The integration test above stubs gh and echoes the post---jq URL, so the
+# vouch's actual --jq never runs there. Exercise it directly against raw
+# JSON shaped like the commits/{oid}/pulls response. Keep this filter in
+# sync with github_merged_pr in ../git-tidy. (gh embeds a jq-compatible
+# engine; system jq validates the same expression.)
+if command -v jq >/dev/null 2>&1; then
+  jqf_oid="feedface"
+  jq_filter="[.[] | select(.merged_at != null and .head.sha == \"$jqf_oid\") | .html_url][0] // empty"
+  # Merged head-match placed LAST, behind an open same-head PR and a merged
+  # interior-commit PR, so the filter must pick it by predicate, not order.
+  jq_hit="$(printf '%s' '[
+    {"merged_at": null, "head": {"sha": "feedface"}, "html_url": "https://x/open-same-head"},
+    {"merged_at": "2026-01-01T00:00:00Z", "head": {"sha": "deadbeef"}, "html_url": "https://x/merged-interior"},
+    {"merged_at": "2026-02-02T00:00:00Z", "head": {"sha": "feedface"}, "html_url": "https://x/merged-head"}
+  ]' | jq -r "$jq_filter")"
+  assert "vouch jq selects the merged head-match over same-head-open and interior" \
+    test "$jq_hit" = "https://x/merged-head"
+  # Only an open same-head PR and a merged interior-commit PR head this
+  # commit -> empty, so the branch is conservatively kept.
+  jq_miss="$(printf '%s' '[
+    {"merged_at": null, "head": {"sha": "feedface"}, "html_url": "https://x/open-same-head"},
+    {"merged_at": "2026-01-01T00:00:00Z", "head": {"sha": "deadbeef"}, "html_url": "https://x/merged-interior"}
+  ]' | jq -r "$jq_filter")"
+  assert "vouch jq yields empty when no merged PR heads the commit" \
+    test -z "$jq_miss"
+else
+  echo "skip: vouch jq-filter test (jq not installed)"
+fi
+
 # --- --self-upgrade routes a Homebrew-managed install through brew ----------
 cellar_bin="$sandbox/homebrew/Cellar/git-tidy/9.9.9/bin"
 mkdir -p "$cellar_bin" "$sandbox/homebrew/bin" "$sandbox/stubbin"

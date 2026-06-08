@@ -481,6 +481,13 @@ github_lookup_available() {
 # original tip, so an exact `.head.sha == oid` match still vouches it. We
 # require that exact-head match (not mere association) so a tip that is
 # only an interior commit of some PR is never mistaken for merged work.
+#
+# --paginate because the endpoint also returns open PRs merely associated
+# with the commit (no guaranteed order), so the one merged head-match can
+# in principle sit past the 30-per-page default. With --paginate gh runs
+# the --jq per page; only the page holding the merged record emits a URL
+# (every other page filters to nothing), so the capture is still that one
+# URL — pagination just guarantees that page is fetched.
 github_pr_memo=$'\n'
 github_merged_pr() {
   local ref="$1" oid url rest
@@ -490,7 +497,7 @@ github_merged_pr() {
     rest="${github_pr_memo#*$'\n'"$oid="}"
     url="${rest%%$'\n'*}"
   else
-    url="$(gh api "repos/{owner}/{repo}/commits/$oid/pulls" \
+    url="$(gh api --paginate "repos/{owner}/{repo}/commits/$oid/pulls" \
              --jq "[.[] | select(.merged_at != null and .head.sha == \"$oid\") | .html_url][0] // empty" \
              2>/dev/null || true)"
     github_pr_memo="$github_pr_memo$oid=$url"$'\n'
