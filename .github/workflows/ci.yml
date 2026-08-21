@@ -2,14 +2,11 @@ name: ci
 
 on:
   pull_request:
-    # `ready_for_review` runs CI when a draft is marked ready; the jobs below skip while it is one.
-    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
 jobs:
   test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +17,6 @@ jobs:
   # with git-tidy under /bin/bash so 3.2 compatibility is gated, not just
   # promised. (shellcheck already runs in the ubuntu job.)
   test-bash32:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +26,6 @@ jobs:
         run: TIDY_BASH=/bin/bash bash test/run.sh
 
   smoke:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
