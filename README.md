@@ -1,6 +1,8 @@
 # git-tidy
 
-A `git` subcommand that cleans up a repository: deletes remote and local branches whose work is redundant, removes their worktrees, cleans up detached worktree folders left under `.worktree/` or `.worktrees/`, fast-forwards the default branch, and runs `git gc`.
+A fully configurable `git` subcommand that cleans up a repository: deletes remote and local branches whose work is redundant, removes their worktrees, cleans up detached worktree folders, fast-forwards the default branch, and runs `git gc`.
+
+Sensible defaults deletes all the cruft without losing any work.
 
 ```
 $ git tidy
@@ -23,10 +25,6 @@ $ git tidy
 ==> done
 ```
 
-A branch counts as **redundant** when deleting it loses nothing: every change it carries is already on the default branch. That covers plain merges, squash- and rebase-merges (detected by content, no forge API needed; requires git ≥ 2.38), and branches with no commits of their own. One case content can't settle: a squash-merged branch whose territory the default branch has since rewritten — merging it back *conflicts*, which is indistinguishable (in pure git) from live conflicting work. On a github.com origin with the [`gh` CLI](https://cli.github.com) installed and authenticated, git-tidy resolves it by asking GitHub which merged PR the branch tip heads, and cites the PR when it acts (`deleted branch (merged as <PR URL>)`). The match is on the commit, not the branch name, so a branch you fetched under a local name of your own (`prNNN` for a PR head ref of `feat-x`) is still recognized. Two corollaries of matching by commit: a branch left pointing at an *earlier* tip than the one that merged (the PR head was amended or force-pushed after you fetched) no longer heads any merged PR, so it's conservatively kept; and because squash merges sever the tip from the default branch's history — leaving this lookup as the only thing that can vouch them — a squash-merging repo without `gh` available will see merged branches accumulate rather than get cleaned. Work that isn't safely somewhere else is never destroyed: branches with unmerged commits are left alone (even when their upstream is gone — e.g. a PR closed unmerged — those are reported), worktrees are only removed when clean, and detached folders only when every file's content is already in git's object database. (One caution on that last check: content that was only ever staged — never committed — counts as saved, but once the folder is deleted it is recoverable only via `git fsck --lost-found`, and only until git prunes unreachable objects.)
-
-The final sync (switch to the default branch + ff-only pull) runs when tracked files have no uncommitted changes, HEAD carries no commits the default branch lacks, and the default branch isn't checked out in another worktree. Untracked files and other worktrees never block it — the switch and the pull leave both alone.
-
 Run with `-i` for an interactive prompt before each destructive action, or pass a directory to tidy every repo found beneath it.
 
 ## Configuration
@@ -35,12 +33,12 @@ Each cleanup decision is configurable via `git config` (per repo, or `--global` 
 
 | Key | Values | Decides what happens to |
 |-----|--------|------------------------|
+| `tidy.local.worktreeDirs` | `.worktree:.worktrees:worktrees` (default) | where worktree folders live |
 | `tidy.remote.branches` | `delete` (default) \| `keep` \| `prompt` | redundant branches on origin |
 | `tidy.remote.branchScope` | `tracked` (default) \| `all` | which origin branches are candidates |
 | `tidy.local.branches` | `delete` (default) \| `keep` \| `prompt` | redundant local branches |
 | `tidy.local.worktrees` | `delete` (default) \| `keep` \| `prompt` | worktrees checked out on a redundant branch |
 | `tidy.local.detachedFolders` | `delete` (default) \| `keep` \| `prompt` | detached folders under the worktree dirs |
-| `tidy.local.worktreeDirs` | `.worktree:.worktrees:worktrees` (default) | where worktree folders live |
 
 `tidy.local.worktreeDirs` is a colon-separated list of directories whose immediate children are treated as worktree folders for the detached-folder cleanup. Relative entries resolve against the main checkout (`.wt`, `worktrees`); absolute entries are used as-is (a centralized `~/worktrees/myrepo`). A configured value replaces the default rather than extending it. Point it only at dedicated worktree containers — anything under these directories that git doesn't list as a worktree is a removal candidate, though folders holding tracked files or unsaved work are never touched.
 
@@ -88,22 +86,6 @@ make install                        # installs to ~/.local/bin
 ```
 
 Upgrade with `git pull && make install`.
-
-## Usage
-
-```
-git tidy [-i|--interactive] [--offline] [DIR]
-```
-
-| Flag | Effect |
-|------|--------|
-| `-i`, `--interactive` | Prompt `y/N` before each destructive action |
-| `--offline` | Skip the network: no fetch, no remote deletions, no pull — local cleanup runs against the last-fetched state |
-| `-V`, `--version` | Print version |
-| `--self-upgrade` | Re-run the installer to fetch the latest version |
-| `-h`, `--help` | Show full help |
-
-Run `git tidy --help` for details on what each cleanup step does and what it skips.
 
 ## Releasing
 
