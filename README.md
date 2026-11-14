@@ -1,8 +1,8 @@
 # git-tidy
 
-A fully configurable `git` subcommand that cleans up a repository: deletes remote and local branches whose work is redundant, removes their worktrees, cleans up detached worktree folders, fast-forwards the default branch, and runs `git gc`.
+Deletes all the cruft without losing any work.
 
-Sensible defaults deletes all the cruft without losing any work.
+A fully configurable `git` subcommand that cleans up a repository: deletes remote and local branches whose work is redundant, removes their worktrees, cleans up detached worktree folders, fast-forwards the default branch, and runs `git gc`.
 
 ```
 $ git tidy
