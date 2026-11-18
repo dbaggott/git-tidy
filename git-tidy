@@ -29,9 +29,10 @@ to the default branch and ff-only pull; git gc.
 
 A branch is redundant when deleting it loses nothing: every change it
 carries is already on origin/<default-branch> — merged, squash- or
-rebase-merged (detected by content; needs git >= 2.38), or vouched for
-by a merged GitHub PR whose head has its tip in its history (needs the
-gh CLI and a github.com origin). Everything else is left alone:
+rebase-merged (detected by content; needs git >= 2.38) — or kept by a
+merged GitHub PR whose head has its tip in its history, unless an open
+PR heads that tip (needs the gh CLI and a github.com origin).
+Everything else is left alone:
 branches with unmerged work (reported when their upstream is gone),
 worktrees with uncommitted changes, and folders holding unsaved files.
 
@@ -467,26 +468,29 @@ github_lookup_available() {
 # Does a merged GitHub PR account for ref $1's tip? On a match, sets
 # branch_redundant_via to a citation and returns 0. Memoized per tip OID.
 #
-# A PR accounts for the tip when it merged into the default branch and the
-# tip is in the history of its head: then every commit on the branch is
-# either already on the default branch or part of that PR, and GitHub
-# keeps the PR's head (refs/pull/<n>/head) after the head branch is
-# deleted, so nothing is lost. That covers a branch left behind a head
-# that moved on elsewhere — a merge of the default branch pushed from
-# another clone, say — as well as the exact head.
+# A merged PR accounts for the tip when the tip is in the history of its
+# head: every commit on the branch is then either on the default branch or
+# in that PR, and GitHub keeps the PR's head (refs/pull/<n>/head) after the
+# head branch is deleted. That covers a branch left behind a head that
+# moved on elsewhere — a merge of the default branch pushed from another
+# clone, say — as well as the exact head. A change that a later commit of
+# the PR undid is kept by that head, not by the default branch.
+#
+# A tip that heads an open PR is live work, whatever merged PR also holds
+# it: deleting it on origin would close that PR.
 #
 # The lookup keys on the commit, not the branch name, so a branch fetched
 # under a name of its own (`prNNN` for a head of `feat-x`) still resolves,
 # and the memo depends on nothing but the OID it is keyed by. The commits
-# API returns PRs merely associated with the commit, open ones included and
-# in no guaranteed order — hence --paginate — and its documentation does
-# not promise what "associated" means for a commit off the default branch,
-# so ancestry is confirmed with the compare API rather than inferred from
-# the association. A base other than the default branch (a stacked PR's
-# parent) is not the default branch's history, so it never vouches.
+# API lists PRs associated with the commit in no guaranteed order — hence
+# --paginate — and its documentation does not promise what "associated"
+# means for a commit off the default branch, so ancestry is confirmed with
+# the compare API rather than inferred from the association. Fields are
+# split on the unit separator: a whitespace IFS would collapse an empty
+# field and shift the rest.
 github_pr_memo=$'\n'
 github_merged_pr() {
-  local ref="$1" oid url rest head_sha base_ref pr_url candidates
+  local ref="$1" oid url rest prs pr_url head_sha pr_state
   github_lookup_available || return 1
   oid="$(git rev-parse "$ref" 2>/dev/null)" || return 1
   if [[ "$github_pr_memo" == *$'\n'"$oid="* ]]; then
@@ -494,17 +498,19 @@ github_merged_pr() {
     url="${rest%%$'\n'*}"
   else
     url=""
-    candidates="$(gh api --paginate "repos/{owner}/{repo}/commits/$oid/pulls" \
-                    --jq '.[] | select(.merged_at != null) | [.head.sha, .base.ref, .html_url] | @tsv' \
-                    2>/dev/null || true)"
-    while IFS=$'\t' read -r head_sha base_ref pr_url; do
-      [[ -n "$head_sha" && "$base_ref" == "$default_branch" ]] || continue
-      if [[ "$head_sha" == "$oid" ]] || [[ "$(gh api "repos/{owner}/{repo}/compare/$oid...$head_sha" \
-                                               --jq .status 2>/dev/null || true)" == "ahead" ]]; then
-        url="$pr_url"
-        break
-      fi
-    done <<<"$candidates"
+    prs="$(gh api --paginate "repos/{owner}/{repo}/commits/$oid/pulls" \
+             --jq '.[] | [.html_url, (.head.sha // ""), (if .merged_at != null then "merged" else .state end)] | join("\u001f")' \
+             2>/dev/null || true)"
+    if [[ $'\n'"$prs"$'\n' != *$'\x1f'"$oid"$'\x1fopen\n'* ]]; then
+      while IFS=$'\x1f' read -r pr_url head_sha pr_state; do
+        [[ "$pr_state" == "merged" && -n "$head_sha" ]] || continue
+        if [[ "$head_sha" == "$oid" ]] || [[ "$(gh api "repos/{owner}/{repo}/compare/$oid...$head_sha" \
+                                                 --jq .status 2>/dev/null || true)" == "ahead" ]]; then
+          url="$pr_url"
+          break
+        fi
+      done <<<"$prs"
+    fi
     github_pr_memo="$github_pr_memo$oid=$url"$'\n'
   fi
   if [[ -n "$url" ]]; then

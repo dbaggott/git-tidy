@@ -603,13 +603,20 @@ git -C "$dev" commit -qam ghx-interior-rewrite
 git -C "$dev" push -q origin "HEAD:refs/heads/$branch" ":refs/heads/ghx-interior-head"
 git -C "$ghx" fetch -q --prune origin
 
-# ghx-stacked: forks where ghx-live does, so it conflicts the same way, and
-# the PR it heads merged — but into a parent branch, not the default
-# branch, so it must be kept.
-git -C "$ghx" switch -qc ghx-stacked --no-track ghx-live~1
-echo stacked > "$ghx/ghx.txt"
+# ghx-feeder: conflicts like ghx-live and sits in a merged PR's history,
+# but also heads an open PR of its own — live work, so it must be kept.
+git -C "$ghx" switch -qc ghx-feeder --no-track ghx-live~1
+echo feeder > "$ghx/ghx.txt"
 git -C "$ghx" add ghx.txt
-git -C "$ghx" commit -qm ghx-stacked-work
+git -C "$ghx" commit -qm ghx-feeder-work
+git -C "$ghx" switch -q "$branch"
+
+# ghx-onward: new work on top of the merged PR #77's head — the head is in
+# the tip's history, not the other way round, so it must be kept.
+git -C "$ghx" switch -qc ghx-onward --no-track ghx-squashed
+echo onward > "$ghx/onward.txt"
+git -C "$ghx" add onward.txt
+git -C "$ghx" commit -qm ghx-onward-work
 git -C "$ghx" switch -q "$branch"
 
 # mislabeled: a local branch fetched under a name of the user's own choosing
@@ -621,28 +628,37 @@ git -C "$ghx" branch mislabeled ghx-squashed
 
 # Fake gh: auth always succeeds; the API is emulated as the post---jq
 # output, keyed by the endpoint path. commits/<oid>/pulls answers one
-# "head-sha<TAB>base-ref<TAB>url" line per merged PR associated with the
-# commit; compare/<base>...<head> answers the comparison's status. The
-# merged PR #77 is also associated with ghx-live's tip, without containing
-# it, so only the ancestry check keeps ghx-live. Anything unlisted heads no
-# merged PR.
+# "url<US>head-sha<US>state" line per PR associated with the commit;
+# compare/<base>...<head> answers the comparison's status. Every
+# conflicting fixture is associated with a merged PR, so only the checks
+# under test tell them apart: ghx-live is not in PR #77's history
+# (diverged), ghx-onward is ahead of it (behind), and ghx-feeder heads an
+# open PR. Anything unlisted is associated with no PR.
 sq_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-squashed)"
 int_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-interior)"
 live_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-live)"
-stacked_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-stacked)"
+feeder_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-feeder)"
+onward_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-onward)"
+pr77="https://github.com/tidy-test/sandbox/pull/77"
+pr78="https://github.com/tidy-test/sandbox/pull/78"
+pr80="https://github.com/tidy-test/sandbox/pull/80"
 mkdir -p "$sandbox/ghstub"
 cat > "$sandbox/ghstub/gh" <<STUB
 #!/bin/sh
 [ "\$1" = "auth" ] && exit 0
 [ "\$1" = "api" ] || exit 0
+pr() { printf '%s\037%s\037%s\n' "\$1" "\$2" "\$3"; }
 for a in "\$@"; do
   case "\$a" in
-    */commits/$sq_oid/pulls) printf '%s\t%s\t%s\n' "$sq_oid" main https://github.com/tidy-test/sandbox/pull/77 ;;
-    */commits/$int_oid/pulls) printf '%s\t%s\t%s\n' "$int_head" main https://github.com/tidy-test/sandbox/pull/78 ;;
-    */commits/$live_oid/pulls) printf '%s\t%s\t%s\n' "$sq_oid" main https://github.com/tidy-test/sandbox/pull/77 ;;
-    */commits/$stacked_oid/pulls) printf '%s\t%s\t%s\n' "$stacked_oid" parent-feature https://github.com/tidy-test/sandbox/pull/79 ;;
+    */commits/$sq_oid/pulls) pr $pr77 $sq_oid merged ;;
+    */commits/$int_oid/pulls) pr $pr78 $int_head merged ;;
+    */commits/$live_oid/pulls) pr $pr77 $sq_oid merged ;;
+    */commits/$feeder_oid/pulls) pr $pr80 $feeder_oid open; pr $pr78 $int_head merged ;;
+    */commits/$onward_oid/pulls) pr $pr77 $sq_oid merged ;;
     */compare/$int_oid...$int_head) echo ahead ;;
+    */compare/$feeder_oid...$int_head) echo ahead ;;
     */compare/$live_oid...$sq_oid) echo diverged ;;
+    */compare/$onward_oid...$sq_oid) echo behind ;;
   esac
 done
 STUB
@@ -678,8 +694,10 @@ assert "interior commit of a merged PR deleted with citation" \
   quiet grep "deleted branch (merged as https://github.com/tidy-test/sandbox/pull/78)" <<<"$out_ghx"
 assert_not "branch behind a merged PR's head deleted" \
   quiet git -C "$ghx" show-ref --verify refs/heads/ghx-interior
-assert "branch heading a PR merged into a non-default base kept" \
-  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-stacked
+assert "branch heading an open PR kept though a merged PR holds it" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-feeder
+assert "branch with work on top of a merged PR's head kept" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-onward
 
 # The integration test above stubs gh with the post---jq output, so the
 # lookup's actual --jq never runs there. Exercise it directly against raw
@@ -687,14 +705,15 @@ assert "branch heading a PR merged into a non-default base kept" \
 # sync with github_merged_pr in ../git-tidy. (gh embeds a jq-compatible
 # engine; system jq validates the same expression.)
 if command -v jq >/dev/null 2>&1; then
-  jq_filter='.[] | select(.merged_at != null) | [.head.sha, .base.ref, .html_url] | @tsv'
+  jq_filter='.[] | [.html_url, (.head.sha // ""), (if .merged_at != null then "merged" else .state end)] | join("\u001f")'
   jq_out="$(printf '%s' '[
-    {"merged_at": null, "head": {"sha": "feedface"}, "base": {"ref": "main"}, "html_url": "https://x/open"},
-    {"merged_at": "2026-01-01T00:00:00Z", "head": {"sha": "deadbeef"}, "base": {"ref": "main"}, "html_url": "https://x/merged"},
-    {"merged_at": "2026-02-02T00:00:00Z", "head": {"sha": "cafef00d"}, "base": {"ref": "parent"}, "html_url": "https://x/stacked"}
+    {"merged_at": null, "state": "open", "head": {"sha": "feedface"}, "html_url": "https://x/open"},
+    {"merged_at": null, "state": "closed", "head": {"sha": "cafef00d"}, "html_url": "https://x/closed"},
+    {"merged_at": "2026-01-01T00:00:00Z", "state": "closed", "head": {"sha": "deadbeef"}, "html_url": "https://x/merged"},
+    {"merged_at": "2026-02-02T00:00:00Z", "state": "closed", "head": {"sha": null}, "html_url": "https://x/headless"}
   ]' | jq -r "$jq_filter")"
-  assert "lookup jq lists each merged PR's head, base and URL, and drops open PRs" \
-    test "$jq_out" = "$(printf 'deadbeef\tmain\thttps://x/merged\ncafef00d\tparent\thttps://x/stacked')"
+  assert "lookup jq lists each PR's URL, head and open/closed/merged state" \
+    test "$jq_out" = "$(printf 'https://x/open\037feedface\037open\nhttps://x/closed\037cafef00d\037closed\nhttps://x/merged\037deadbeef\037merged\nhttps://x/headless\037\037merged')"
 else
   echo "skip: lookup jq-filter test (jq not installed)"
 fi
