@@ -31,9 +31,9 @@ A branch is redundant when deleting it loses nothing: every change it
 carries is already on origin/<default-branch> — merged, squash- or
 rebase-merged (detected by content; needs git >= 2.38), or vouched for
 by a merged GitHub PR whose head has its tip in its history (needs the
-gh CLI and a github.com origin). Everything else is left alone: branches with
-unmerged work (reported when their upstream is gone), worktrees with
-uncommitted changes, and folders holding unsaved files.
+gh CLI and a github.com origin). Everything else is left alone:
+branches with unmerged work (reported when their upstream is gone),
+worktrees with uncommitted changes, and folders holding unsaved files.
 
 Options:
   -i, --interactive   Ask y/N before each destructive action.
@@ -471,8 +471,8 @@ github_lookup_available() {
 # tip is in the history of its head: then every commit on the branch is
 # either already on the default branch or part of that PR, and GitHub
 # keeps the PR's head (refs/pull/<n>/head) after the head branch is
-# deleted, so nothing is lost. That covers a branch left one commit behind
-# a head that moved elsewhere — a merge of the default branch pushed from
+# deleted, so nothing is lost. That covers a branch left behind a head
+# that moved on elsewhere — a merge of the default branch pushed from
 # another clone, say — as well as the exact head.
 #
 # The lookup keys on the commit, not the branch name, so a branch fetched
