@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 
 print_usage() {
   cat <<'EOF'
@@ -30,8 +30,8 @@ to the default branch and ff-only pull; git gc.
 A branch is redundant when deleting it loses nothing: every change it
 carries is already on origin/<default-branch> — merged, squash- or
 rebase-merged (detected by content; needs git >= 2.38), or vouched for
-by a merged GitHub PR matching its tip exactly (needs the gh CLI and a
-github.com origin). Everything else is left alone: branches with
+by a merged GitHub PR whose head has its tip in its history (needs the
+gh CLI and a github.com origin). Everything else is left alone: branches with
 unmerged work (reported when their upstream is gone), worktrees with
 uncommitted changes, and folders holding unsaved files.
 
@@ -464,42 +464,47 @@ github_lookup_available() {
   [[ "$github_lookup_state" == "yes" ]]
 }
 
-# Does a merged GitHub PR account for ref $1's exact tip? On a match, sets
+# Does a merged GitHub PR account for ref $1's tip? On a match, sets
 # branch_redundant_via to a citation and returns 0. Memoized per tip OID.
 #
-# The lookup keys on the commit, not the branch name: it asks the commits
-# API which PRs that exact OID heads, then keeps a merged one. Querying by
-# OID rather than `pr list --head <name>` is what makes a locally-renamed
-# branch (fetched as `prNNN`, say, when the PR head was `feat-x`) still
-# resolve — the name-based query only ever matched when the local branch
-# happened to share the PR's head-ref name. It also makes the per-OID memo
-# exactly right: the answer now depends solely on the OID it's keyed by, so
-# a remote and a local candidate at the same tip genuinely share it.
+# A PR accounts for the tip when it merged into the default branch and the
+# tip is in the history of its head: then every commit on the branch is
+# either already on the default branch or part of that PR, and GitHub
+# keeps the PR's head (refs/pull/<n>/head) after the head branch is
+# deleted, so nothing is lost. That covers a branch left one commit behind
+# a head that moved elsewhere — a merge of the default branch pushed from
+# another clone, say — as well as the exact head.
 #
-# The commit's head PR survives a squash merge: the merge writes a new
-# commit to the default branch, but the PR record keeps head.sha at the
-# original tip, so an exact `.head.sha == oid` match still vouches it. We
-# require that exact-head match (not mere association) so a tip that is
-# only an interior commit of some PR is never mistaken for merged work.
-#
-# --paginate because the endpoint also returns open PRs merely associated
-# with the commit (no guaranteed order), so the one merged head-match can
-# in principle sit past the 30-per-page default. With --paginate gh runs
-# the --jq per page; only the page holding the merged record emits a URL
-# (every other page filters to nothing), so the capture is still that one
-# URL — pagination just guarantees that page is fetched.
+# The lookup keys on the commit, not the branch name, so a branch fetched
+# under a name of its own (`prNNN` for a head of `feat-x`) still resolves,
+# and the memo depends on nothing but the OID it is keyed by. The commits
+# API returns PRs merely associated with the commit, open ones included and
+# in no guaranteed order — hence --paginate — and its documentation does
+# not promise what "associated" means for a commit off the default branch,
+# so ancestry is confirmed with the compare API rather than inferred from
+# the association. A base other than the default branch (a stacked PR's
+# parent) is not the default branch's history, so it never vouches.
 github_pr_memo=$'\n'
 github_merged_pr() {
-  local ref="$1" oid url rest
+  local ref="$1" oid url rest head_sha base_ref pr_url candidates
   github_lookup_available || return 1
   oid="$(git rev-parse "$ref" 2>/dev/null)" || return 1
   if [[ "$github_pr_memo" == *$'\n'"$oid="* ]]; then
     rest="${github_pr_memo#*$'\n'"$oid="}"
     url="${rest%%$'\n'*}"
   else
-    url="$(gh api --paginate "repos/{owner}/{repo}/commits/$oid/pulls" \
-             --jq "[.[] | select(.merged_at != null and .head.sha == \"$oid\") | .html_url][0] // empty" \
-             2>/dev/null || true)"
+    url=""
+    candidates="$(gh api --paginate "repos/{owner}/{repo}/commits/$oid/pulls" \
+                    --jq '.[] | select(.merged_at != null) | [.head.sha, .base.ref, .html_url] | @tsv' \
+                    2>/dev/null || true)"
+    while IFS=$'\t' read -r head_sha base_ref pr_url; do
+      [[ -n "$head_sha" && "$base_ref" == "$default_branch" ]] || continue
+      if [[ "$head_sha" == "$oid" ]] || [[ "$(gh api "repos/{owner}/{repo}/compare/$oid...$head_sha" \
+                                               --jq .status 2>/dev/null || true)" == "ahead" ]]; then
+        url="$pr_url"
+        break
+      fi
+    done <<<"$candidates"
     github_pr_memo="$github_pr_memo$oid=$url"$'\n'
   fi
   if [[ -n "$url" ]]; then
@@ -513,7 +518,7 @@ github_merged_pr() {
 # tip is reachable from $merge_target (merged, or never started), or when
 # merging it there would leave $merge_target's tree unchanged (squash- or
 # rebase-merged). A merge conflict alone means "not redundant" — unless a
-# merged GitHub PR vouches for the exact tip (see above), in which case
+# merged GitHub PR vouches for the tip (see above), in which case
 # branch_redundant_via carries the citation.
 branch_redundant() {
   local ref="$1" merged_tree
