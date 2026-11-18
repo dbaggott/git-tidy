@@ -581,6 +581,44 @@ git -C "$ghx" commit -qm ghx-live-work
 git -C "$ghx" push -q -u origin ghx-live
 git -C "$ghx" switch -q "$branch"
 
+# ghx-interior: a local branch one commit behind the head of a merged PR —
+# the head moved on from another clone before the squash merge, and the
+# default branch then rewrote the territory. The tip is an interior commit
+# of the PR, so only the ancestry-confirmed lookup can vouch.
+git -C "$ghx" switch -qc ghx-interior --no-track "origin/$branch"
+echo first > "$ghx/interior.txt"
+git -C "$ghx" add interior.txt
+git -C "$ghx" commit -qm ghx-interior-work
+echo second > "$ghx/interior.txt"
+git -C "$ghx" commit -qam ghx-interior-moved-on
+git -C "$ghx" push -q origin HEAD:refs/heads/ghx-interior-head
+int_head="$(git -C "$ghx" rev-parse HEAD)"
+git -C "$ghx" switch -q "$branch"
+git -C "$ghx" branch -qf ghx-interior "$int_head~1"
+git -C "$dev" fetch -q origin
+quiet git -C "$dev" merge --squash origin/ghx-interior-head
+git -C "$dev" commit -qm "ghx-interior (#78)"
+echo third > "$dev/interior.txt"
+git -C "$dev" commit -qam ghx-interior-rewrite
+git -C "$dev" push -q origin "HEAD:refs/heads/$branch" ":refs/heads/ghx-interior-head"
+git -C "$ghx" fetch -q --prune origin
+
+# ghx-feeder: conflicts like ghx-live and sits in a merged PR's history,
+# but also heads an open PR of its own — live work, so it must be kept.
+git -C "$ghx" switch -qc ghx-feeder --no-track ghx-live~1
+echo feeder > "$ghx/ghx.txt"
+git -C "$ghx" add ghx.txt
+git -C "$ghx" commit -qm ghx-feeder-work
+git -C "$ghx" switch -q "$branch"
+
+# ghx-onward: new work on top of the merged PR #77's head — the head is in
+# the tip's history, not the other way round, so it must be kept.
+git -C "$ghx" switch -qc ghx-onward --no-track ghx-squashed
+echo onward > "$ghx/onward.txt"
+git -C "$ghx" add onward.txt
+git -C "$ghx" commit -qm ghx-onward-work
+git -C "$ghx" switch -q "$branch"
+
 # mislabeled: a local branch fetched under a name of the user's own choosing
 # (e.g. `git fetch origin pull/77/head:mislabeled`), pointing at the merged
 # PR's head — whose head ref was "ghx-squashed". The old name-based vouch
@@ -588,20 +626,39 @@ git -C "$ghx" switch -q "$branch"
 # recognizes it by tip and deletes it like any other merged branch.
 git -C "$ghx" branch mislabeled ghx-squashed
 
-# Fake gh: auth always succeeds; the commits API is emulated as the
-# post---jq output (just the PR URL), answered only for the merged
-# fixture's tip — the real call is
-# `gh api repos/{owner}/{repo}/commits/<oid>/pulls`, so its endpoint path
-# ends in that exact OID. Every other commit heads no merged PR.
+# Fake gh: auth always succeeds; the API is emulated as the post---jq
+# output, keyed by the endpoint path. commits/<oid>/pulls answers one
+# "url<US>head-sha<US>state" line per PR associated with the commit;
+# compare/<base>...<head> answers the comparison's status. Every
+# conflicting fixture is associated with a merged PR, so only the checks
+# under test tell them apart: ghx-live is not in PR #77's history
+# (diverged), ghx-onward is ahead of it (behind), and ghx-feeder heads an
+# open PR. Anything unlisted is associated with no PR.
 sq_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-squashed)"
+int_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-interior)"
+live_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-live)"
+feeder_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-feeder)"
+onward_oid="$(git -C "$ghx" rev-parse refs/heads/ghx-onward)"
+pr77="https://github.com/tidy-test/sandbox/pull/77"
+pr78="https://github.com/tidy-test/sandbox/pull/78"
+pr80="https://github.com/tidy-test/sandbox/pull/80"
 mkdir -p "$sandbox/ghstub"
 cat > "$sandbox/ghstub/gh" <<STUB
 #!/bin/sh
 [ "\$1" = "auth" ] && exit 0
 [ "\$1" = "api" ] || exit 0
+pr() { printf '%s\037%s\037%s\n' "\$1" "\$2" "\$3"; }
 for a in "\$@"; do
   case "\$a" in
-    */commits/$sq_oid/pulls) echo "https://github.com/tidy-test/sandbox/pull/77" ;;
+    */commits/$sq_oid/pulls) pr $pr77 $sq_oid merged ;;
+    */commits/$int_oid/pulls) pr $pr78 $int_head merged ;;
+    */commits/$live_oid/pulls) pr $pr77 $sq_oid merged ;;
+    */commits/$feeder_oid/pulls) pr $pr80 $feeder_oid open; pr $pr78 $int_head merged ;;
+    */commits/$onward_oid/pulls) pr $pr77 $sq_oid merged ;;
+    */compare/$int_oid...$int_head) echo ahead ;;
+    */compare/$feeder_oid...$int_head) echo ahead ;;
+    */compare/$live_oid...$sq_oid) echo diverged ;;
+    */compare/$onward_oid...$sq_oid) echo behind ;;
   esac
 done
 STUB
@@ -633,34 +690,32 @@ assert "conflicted unmerged remote branch kept" \
   quiet grep "refs/heads/ghx-live$" <<<"$(git ls-remote --heads "$sandbox/origin.git")"
 assert "conflicted unmerged local branch kept" \
   quiet git -C "$ghx" show-ref --verify refs/heads/ghx-live
+assert "interior commit of a merged PR deleted with citation" \
+  quiet grep "deleted branch (merged as https://github.com/tidy-test/sandbox/pull/78)" <<<"$out_ghx"
+assert_not "branch behind a merged PR's head deleted" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-interior
+assert "branch heading an open PR kept though a merged PR holds it" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-feeder
+assert "branch with work on top of a merged PR's head kept" \
+  quiet git -C "$ghx" show-ref --verify refs/heads/ghx-onward
 
-# The integration test above stubs gh and echoes the post---jq URL, so the
-# vouch's actual --jq never runs there. Exercise it directly against raw
+# The integration test above stubs gh with the post---jq output, so the
+# lookup's actual --jq never runs there. Exercise it directly against raw
 # JSON shaped like the commits/{oid}/pulls response. Keep this filter in
 # sync with github_merged_pr in ../git-tidy. (gh embeds a jq-compatible
 # engine; system jq validates the same expression.)
 if command -v jq >/dev/null 2>&1; then
-  jqf_oid="feedface"
-  jq_filter="[.[] | select(.merged_at != null and .head.sha == \"$jqf_oid\") | .html_url][0] // empty"
-  # Merged head-match placed LAST, behind an open same-head PR and a merged
-  # interior-commit PR, so the filter must pick it by predicate, not order.
-  jq_hit="$(printf '%s' '[
-    {"merged_at": null, "head": {"sha": "feedface"}, "html_url": "https://x/open-same-head"},
-    {"merged_at": "2026-01-01T00:00:00Z", "head": {"sha": "deadbeef"}, "html_url": "https://x/merged-interior"},
-    {"merged_at": "2026-02-02T00:00:00Z", "head": {"sha": "feedface"}, "html_url": "https://x/merged-head"}
+  jq_filter='.[] | [.html_url, (.head.sha // ""), (if .merged_at != null then "merged" else .state end)] | join("\u001f")'
+  jq_out="$(printf '%s' '[
+    {"merged_at": null, "state": "open", "head": {"sha": "feedface"}, "html_url": "https://x/open"},
+    {"merged_at": null, "state": "closed", "head": {"sha": "cafef00d"}, "html_url": "https://x/closed"},
+    {"merged_at": "2026-01-01T00:00:00Z", "state": "closed", "head": {"sha": "deadbeef"}, "html_url": "https://x/merged"},
+    {"merged_at": "2026-02-02T00:00:00Z", "state": "closed", "head": {"sha": null}, "html_url": "https://x/headless"}
   ]' | jq -r "$jq_filter")"
-  assert "vouch jq selects the merged head-match over same-head-open and interior" \
-    test "$jq_hit" = "https://x/merged-head"
-  # Only an open same-head PR and a merged interior-commit PR head this
-  # commit -> empty, so the branch is conservatively kept.
-  jq_miss="$(printf '%s' '[
-    {"merged_at": null, "head": {"sha": "feedface"}, "html_url": "https://x/open-same-head"},
-    {"merged_at": "2026-01-01T00:00:00Z", "head": {"sha": "deadbeef"}, "html_url": "https://x/merged-interior"}
-  ]' | jq -r "$jq_filter")"
-  assert "vouch jq yields empty when no merged PR heads the commit" \
-    test -z "$jq_miss"
+  assert "lookup jq lists each PR's URL, head and open/closed/merged state" \
+    test "$jq_out" = "$(printf 'https://x/open\037feedface\037open\nhttps://x/closed\037cafef00d\037closed\nhttps://x/merged\037deadbeef\037merged\nhttps://x/headless\037\037merged')"
 else
-  echo "skip: vouch jq-filter test (jq not installed)"
+  echo "skip: lookup jq-filter test (jq not installed)"
 fi
 
 # --- --self-upgrade routes a Homebrew-managed install through brew ----------
