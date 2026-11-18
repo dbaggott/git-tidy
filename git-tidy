@@ -30,11 +30,11 @@ to the default branch and ff-only pull; git gc.
 A branch is redundant when deleting it loses nothing: every change it
 carries is already on origin/<default-branch> — merged, squash- or
 rebase-merged (detected by content; needs git >= 2.38) — or kept by a
-merged GitHub PR whose head has its tip in its history, unless an open
-PR heads that tip (needs the gh CLI and a github.com origin).
-Everything else is left alone:
-branches with unmerged work (reported when their upstream is gone),
-worktrees with uncommitted changes, and folders holding unsaved files.
+merged GitHub PR whose history contains the branch's tip, unless an
+open PR heads that tip (needs the gh CLI and a github.com origin).
+Everything else is left alone: branches with unmerged work (reported
+when their upstream is gone), worktrees with uncommitted changes, and
+folders holding unsaved files.
 
 Options:
   -i, --interactive   Ask y/N before each destructive action.
