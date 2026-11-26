@@ -1,1 +1,4 @@
 .worktrees/
+
+# JetBrains IDEs
+.idea/
